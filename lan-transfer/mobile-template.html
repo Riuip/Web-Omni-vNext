@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <meta name="web-omni-lan-client" content="v2">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src blob:; connect-src https: wss: ws:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Web-Omni 手机传输</title>
+  <style>
+    :root {
+      --bg:#0f1012;
+      --panel:#17191d;
+      --panel-border:#30343c;
+      --surface:#0f1012;
+      --surface-border:#30343c;
+      --text:#f2f4f7;
+      --text-soft:#b7bdc8;
+      --text-muted:#858d9a;
+      --accent:#ffffff;
+      --accent-strong:#ffffff;
+      --success:#7bd88f;
+      --warning:#ffd166;
+      --danger:#ff7d7d;
+      --shadow:0 10px 30px rgba(0,0,0,0.25);
+      --chip-bg:#202329;
+      --chip-text:#f2f4f7;
+      --input-bg:#0c0e11;
+      color-scheme:dark;
+    }
+
+    html[data-wo-theme="light"] {
+      --bg:#f7f7f8;
+      --panel:#ffffff;
+      --panel-border:#d7d9de;
+      --surface:#f7f7f8;
+      --surface-border:#d7d9de;
+      --text:#111111;
+      --text-soft:#5f6368;
+      --text-muted:#8d8d95;
+      --shadow:0 14px 32px rgba(17,17,17,0.08);
+      --chip-bg:rgba(17,17,17,0.05);
+      --chip-text:#111111;
+      --input-bg:rgba(255,255,255,0.98);
+      color-scheme:light;
+    }
+
+    * { box-sizing:border-box; letter-spacing:0 }
+    html,body { margin:0; min-height:100% }
+    body {
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+      color:var(--text);
+      background:var(--bg);
+    }
+    button,input,textarea { font:inherit }
+
+    .app { max-width:560px; margin:0 auto; padding:18px 14px 24px }
+    .header {
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:12px;
+      margin-bottom:16px;
+    }
+    .brand { display:flex; gap:12px; align-items:flex-start; min-width:0 }
+    .brand-mark {
+      width:52px;
+      height:52px;
+      border-radius:6px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:#f5f5f5;
+      color:#111111;
+      font-weight:800;
+      font-size:18px;
+      flex-shrink:0;
+    }
+    html[data-wo-theme="light"] .brand-mark { background:#111111; color:#fff }
+    .eyebrow {
+      margin:0 0 6px;
+      color:var(--text-muted);
+      font-size:12px;
+      font-weight:700;
+      text-transform:uppercase;
+    }
+    h1 { margin:0; font-size:28px; line-height:1.08 }
+    .sub { margin:8px 0 0; color:var(--text-soft); font-size:14px; line-height:1.7 }
+
+    .theme-switcher {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:6px;
+      border-radius:6px;
+      border:1px solid rgba(148,163,184,.18);
+      background:var(--panel);
+      box-shadow:var(--shadow);
+      flex-shrink:0;
+    }
+    .theme-btn {
+      min-height:34px;
+      padding:7px 11px;
+      border:none;
+      border-radius:4px;
+      background:transparent;
+      color:var(--text-soft);
+      cursor:pointer;
+      font-size:13px;
+      font-weight:700;
+    }
+    .theme-btn.active {
+      background:var(--text);
+      color:var(--bg);
+    }
+
+    .status {
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      padding:12px 14px;
+      border-radius:6px;
+      border:1px solid var(--panel-border);
+      background:var(--chip-bg);
+      color:var(--text);
+      font-size:13px;
+      font-weight:700;
+      margin-bottom:14px;
+    }
+    .dot { width:10px; height:10px; border-radius:50%; background:#5f718a; flex-shrink:0 }
+    .status.connecting .dot { background:var(--warning); animation:pulse 1.2s infinite }
+    .status.connected .dot { background:var(--success); animation:none }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,*::before,*::after {
+        scroll-behavior:auto !important;
+        animation-duration:.01ms !important;
+        animation-iteration-count:1 !important;
+        transition-duration:.01ms !important;
+      }
+    }
+
+    .panel {
+      background:var(--panel);
+      border:1px solid var(--panel-border);
+      border-radius:8px;
+      box-shadow:var(--shadow);
+      margin-bottom:14px;
+      overflow:hidden;
+    }
+    .panel-body { padding:18px }
+    .panel h2 { margin:0; font-size:20px }
+    .hint, .help { color:var(--text-soft); font-size:13px; line-height:1.7 }
+    .hint { margin-top:8px }
+    .field-label {
+      display:block;
+      margin-bottom:8px;
+      color:var(--text-soft);
+      font-size:13px;
+      font-weight:700;
+    }
+    .code-row { display:flex; gap:10px; align-items:stretch }
+    .code-input {
+      flex:1;
+      padding:14px 16px;
+      border-radius:6px;
+      border:1px solid rgba(148,163,184,.18);
+      background:var(--input-bg);
+      color:var(--text);
+      font-size:20px;
+      font-family:"SFMono-Regular",Consolas,monospace;
+      text-transform:uppercase;
+      outline:none;
+      text-align:center;
+    }
+    .code-input:focus, .chat-input:focus {
+      border-color:rgba(83,183,255,.72);
+      box-shadow:0 0 0 4px rgba(83,183,255,.12);
+    }
+    .btn {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:8px;
+      min-height:44px;
+      padding:10px 16px;
+      border-radius:6px;
+      border:1px solid rgba(148,163,184,.18);
+      background:rgba(255,255,255,.05);
+      color:var(--text);
+      cursor:pointer;
+      font-size:14px;
+      font-weight:600;
+    }
+    html[data-wo-theme="light"] .btn { background:rgba(17,17,17,.04) }
+    .btn:disabled { opacity:.56; cursor:not-allowed }
+    .btn-primary {
+      background:#f5f5f5;
+      border-color:#f5f5f5;
+      color:#111111;
+    }
+    html[data-wo-theme="light"] .btn-primary { background:#111111; border-color:#111111; color:#fff }
+
+    .conversation-header {
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:14px;
+      margin-bottom:14px;
+    }
+    .chat-counter {
+      padding:8px 10px;
+      border-radius:4px;
+      background:var(--chip-bg);
+      color:var(--chip-text);
+      font-size:12px;
+      font-weight:700;
+      white-space:nowrap;
+    }
+    .chat-counter.over-limit { background:rgba(255,125,125,.14); color:#ffdede }
+
+    .conversation-surface {
+      border-radius:8px;
+      border:1px solid var(--surface-border);
+      background:var(--surface);
+      min-height:320px;
+    }
+    .conversation-surface.drag-over {
+      border-color:rgba(83,183,255,.38);
+      box-shadow:0 0 0 4px rgba(83,183,255,.08);
+    }
+    .conversation-stream {
+      display:flex;
+      flex-direction:column;
+      gap:12px;
+      min-height:320px;
+      max-height:420px;
+      overflow-y:auto;
+      padding:16px;
+    }
+    .conversation-empty {
+      min-height:280px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap:12px;
+      text-align:center;
+      color:var(--text-muted);
+    }
+    .conversation-empty-mark {
+      width:64px;
+      height:64px;
+      border-radius:6px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      background:var(--chip-bg);
+      color:var(--text);
+      font-size:20px;
+      font-weight:800;
+    }
+    .conversation-empty-title {
+      margin:0;
+      color:var(--text);
+      font-size:18px;
+      font-weight:800;
+    }
+    .conversation-empty-copy {
+      margin:0;
+      color:var(--text-soft);
+      font-size:13px;
+      line-height:1.75;
+    }
+
+    .conversation-item { display:flex; width:100% }
+    .conversation-item.outgoing { justify-content:flex-end }
+
+    .text-bubble,
+    .file-bubble,
+    .system-bubble {
+      max-width:100%;
+      border-radius:8px;
+      border:1px solid rgba(148,163,184,.12);
+      background:rgba(8,14,27,.84);
+      box-shadow:var(--shadow);
+    }
+    html[data-wo-theme="light"] .text-bubble,
+    html[data-wo-theme="light"] .file-bubble,
+    html[data-wo-theme="light"] .system-bubble {
+      background:rgba(255,255,255,.96);
+      border-color:rgba(148,163,184,.2);
+    }
+    .conversation-item.outgoing .text-bubble,
+    .conversation-item.outgoing .file-bubble {
+      background:#243247;
+      border-color:rgba(83,183,255,.24);
+    }
+    .text-bubble { padding:12px 14px 10px }
+    .text-body {
+      margin:0;
+      white-space:pre-wrap;
+      word-break:break-word;
+      color:var(--text);
+      font-size:14px;
+      line-height:1.6;
+    }
+    .text-body a {
+      color:var(--text);
+      text-decoration:underline;
+      text-decoration-thickness:1.5px;
+      text-underline-offset:3px;
+      word-break:break-all;
+    }
+    .text-body a:hover { opacity:.72 }
+    .message-meta {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      margin-top:8px;
+      color:var(--text-soft);
+      font-size:12px;
+    }
+    .message-meta-actions {
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+    }
+    .chat-copy {
+      padding:0;
+      border:none;
+      background:transparent;
+      color:var(--text);
+      cursor:pointer;
+      font-size:12px;
+      font-weight:700;
+    }
+    .text-status { color:var(--text-muted) }
+    .text-status.done { color:var(--success) }
+    .text-status.error { color:var(--danger) }
+
+    .conversation-item.file-message {
+      width:min(100%, 100%);
+    }
+    .file-bubble {
+      width:100%;
+      padding:14px;
+      display:grid;
+      grid-template-columns:auto minmax(0,1fr);
+      column-gap:12px;
+      row-gap:8px;
+    }
+    .file-bubble .file-icon {
+      width:42px;
+      height:42px;
+      border-radius:6px;
+      background:var(--chip-bg);
+      color:var(--chip-text);
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-size:14px;
+      font-weight:800;
+    }
+    .file-bubble .file-info { min-width:0 }
+    .file-bubble .file-name {
+      color:var(--text);
+      font-size:14px;
+      font-weight:800;
+      word-break:break-word;
+    }
+    .file-bubble .file-meta {
+      margin-top:4px;
+      color:var(--text-soft);
+      font-size:12px;
+    }
+    .file-bubble .file-speed { color:#8fd0ff }
+    html[data-wo-theme="light"] .file-bubble .file-speed { color:#1760a3 }
+    .file-bubble .file-progress {
+      height:5px;
+      margin-top:10px;
+      border-radius:3px;
+      background:rgba(148,163,184,.14);
+      overflow:hidden;
+    }
+    .file-bubble .file-progress-bar {
+      height:100%;
+      width:0%;
+      border-radius:inherit;
+      background:#4c8dff;
+      transition:width .22s cubic-bezier(.32,0,.18,1);
+    }
+    .file-bubble .file-status {
+      grid-column:2;
+      color:var(--text-muted);
+      font-size:12px;
+      line-height:1.6;
+    }
+    .file-bubble .file-status.done { color:var(--success) }
+    .file-bubble .file-status.error { color:var(--danger) }
+
+    .system-note { justify-content:center }
+    .system-bubble {
+      padding:10px 14px;
+      border-radius:6px;
+      background:rgba(83,183,255,.08);
+      color:var(--text-soft);
+      font-size:12px;
+    }
+
+    .composer-shell {
+      margin-top:14px;
+      padding-top:14px;
+      border-top:1px solid rgba(148,163,184,.12);
+    }
+    .chat-composer { display:flex; flex-direction:column; gap:10px }
+    .chat-input {
+      width:100%;
+      min-height:104px;
+      resize:vertical;
+      padding:14px 16px;
+      border-radius:6px;
+      border:1px solid rgba(148,163,184,.18);
+      background:var(--input-bg);
+      color:var(--text);
+      font-size:15px;
+      line-height:1.6;
+      outline:none;
+    }
+    .chat-actions {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:14px;
+    }
+    .composer-actions { display:inline-flex; gap:10px }
+    .help { margin-top:8px }
+
+    @media (max-width:560px) {
+      .app { padding:14px 12px 20px }
+      .header { flex-direction:column }
+      .theme-switcher { width:100%; justify-content:space-between }
+      .theme-btn { flex:1 }
+      h1 { font-size:24px }
+      .code-row,
+      .chat-actions,
+      .conversation-header,
+      .message-meta { flex-direction:column; align-items:stretch }
+      .chat-counter { align-self:flex-start }
+      .message-meta-actions {
+        width:100%;
+        justify-content:space-between;
+      }
+      .composer-actions { width:100% }
+      .composer-actions .btn { flex:1 }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">WO</div>
+        <div>
+          <p class="eyebrow">Web-Omni vNext</p>
+          <h1>手机传输</h1>
+          <p class="sub">像一个真正的传输助手那样，在同一个会话窗口里互传文件和文本。当前页面既可以作为单独下载的 HTML，也可以通过局域网页包打开。</p>
+        </div>
+      </div>
+
+      <div class="theme-switcher" role="group" aria-label="主题模式">
+        <button type="button" class="theme-btn" data-theme-mode="auto" aria-pressed="true">自动</button>
+        <button type="button" class="theme-btn" data-theme-mode="dark" aria-pressed="false">深色</button>
+        <button type="button" class="theme-btn" data-theme-mode="light" aria-pressed="false">浅色</button>
+      </div>
+    </header>
+
+    <div class="status connecting" id="statusBar">
+      <span class="dot"></span>
+      <span id="statusText">输入房间码后点击连接</span>
+    </div>
+
+    <section class="panel">
+      <div class="panel-body">
+        <label class="field-label" for="roomCodeInput">电脑端显示的房间码</label>
+        <div class="code-row">
+          <input id="roomCodeInput" class="code-input" maxlength="6" placeholder="------">
+          <button class="btn btn-primary" id="connectBtn" type="button">连接</button>
+        </div>
+        <p class="hint">如果电脑重新生成了房间码，请同步更新这里的房间码后再连接。</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-body">
+        <div class="conversation-header">
+          <div>
+            <h2>传输会话</h2>
+            <p class="hint">连接成功后，文本消息和文件传输都会按时间顺序出现在这里。</p>
+          </div>
+          <div class="chat-counter" id="chatCounter">0 / 32768 字节</div>
+        </div>
+
+        <div class="conversation-surface" id="conversationSurface">
+          <div class="conversation-stream" id="conversationStream">
+            <div class="conversation-empty" id="conversationEmpty">
+              <div class="conversation-empty-mark">WO</div>
+              <p class="conversation-empty-title">连接后就能开始发送</p>
+              <p class="conversation-empty-copy">支持发验证码、短文本、链接和文件。点“发送文件”即可选择手机上的文件。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-shell">
+          <input id="fileInput" type="file" multiple hidden>
+          <div class="chat-composer">
+            <textarea id="chatInput" class="chat-input" rows="4" placeholder="例如：验证码、链接、临时说明……支持直接粘贴图片或截图，按 Enter 发送，Shift + Enter 换行" spellcheck="false"></textarea>
+            <div class="chat-actions">
+              <div class="hint" id="chatHint">请先连接电脑后再发送。</div>
+              <div class="composer-actions">
+                <button class="btn" id="pickFileBtn" type="button">发送文件</button>
+                <button class="btn btn-primary" id="sendChatBtn" type="button" disabled>发送文本</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <p class="help">建立连接时仍需要信令与 STUN 网络可用。聊天记录只保留在当前页面会话内，不会写入本地持久存储。</p>
+  </div>
+  <script>
+__WO_PEER_JS__
+</script>
+<script>
+__WO_SECURE_CHANNEL__
+</script>
+<script>
+__WO_MOBILE_RUNTIME__
+  </script>
+</body>
+</html>

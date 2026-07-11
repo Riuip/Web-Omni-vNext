@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web-Omni | 密码库快捷操作</title>
+  <link rel="stylesheet" href="../styles/command-surface.css">
+  <link rel="stylesheet" href="quick.css">
+</head>
+<body class="wo-command-surface">
+  <main class="quick-shell" aria-labelledby="quickTitle">
+    <header class="quick-header">
+      <span class="brand-mark" aria-hidden="true">WO</span>
+      <span class="header-copy">
+        <strong id="quickTitle">密码库</strong>
+        <small id="siteLabel">正在读取当前站点</small>
+      </span>
+      <span class="vault-state" id="vaultState" data-state="loading" aria-live="polite">
+        <span class="state-dot" aria-hidden="true"></span>
+        <span id="vaultStateText">正在检查</span>
+      </span>
+      <button class="icon-button" id="closeButton" type="button" title="关闭" aria-label="关闭密码库快捷窗口">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18"></path>
+        </svg>
+      </button>
+    </header>
+
+    <div class="quick-content">
+      <section class="action-panel" aria-label="密码库功能">
+        <button class="action-row" id="fillButton" type="button">
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 7a4 4 0 1 0-7.5 2L3 13.5V17h3v3h3v-3h2l3.5-3.5A4 4 0 0 0 15 7Z"></path>
+              <circle cx="15" cy="7" r=".7" fill="currentColor" stroke="none"></circle>
+            </svg>
+            <span class="spinner" aria-hidden="true"></span>
+          </span>
+          <span class="action-copy">
+            <strong>一键填充</strong>
+            <small>填入当前站点的已保存账号</small>
+          </span>
+          <svg class="row-arrow" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m9 18 6-6-6-6"></path>
+          </svg>
+        </button>
+
+        <div class="action-row toggle-row">
+          <span class="action-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12"></path>
+              <path d="m8 11 4 4 4-4"></path>
+              <path d="M5 18v2h14v-2"></path>
+            </svg>
+          </span>
+          <label class="action-copy" for="autoSaveSwitch">
+            <strong>自动保存</strong>
+            <small id="autoSaveLabel">正在读取当前页面状态</small>
+          </label>
+          <button class="switch" id="autoSaveSwitch" type="button" role="switch" aria-checked="false" aria-label="开启自动保存" disabled>
+            <span aria-hidden="true"></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="generator-panel" aria-labelledby="generatorTitle">
+        <div class="section-heading">
+          <span>
+            <strong id="generatorTitle">安全密码</strong>
+            <small>仅在本机生成</small>
+          </span>
+          <label class="length-control">
+            <span>长度</span>
+            <select id="passwordLength" aria-label="密码长度">
+              <option value="12">12</option>
+              <option value="16" selected>16</option>
+              <option value="20">20</option>
+              <option value="24">24</option>
+              <option value="32">32</option>
+            </select>
+          </label>
+        </div>
+
+        <output class="password-output" id="passwordOutput" aria-live="polite" aria-label="生成的密码"></output>
+
+        <div class="generator-actions">
+          <button class="secondary-button" id="generateButton" type="button">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M20 12a8 8 0 1 1-2.3-5.7"></path>
+              <path d="M20 4v6h-6"></path>
+            </svg>
+            重新生成
+          </button>
+          <button class="primary-button" id="copyButton" type="button">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="11" height="11" rx="2"></rect>
+              <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"></path>
+            </svg>
+            复制
+          </button>
+        </div>
+      </section>
+
+      <p class="notice" id="notice" data-tone="idle" role="status" aria-live="polite"></p>
+
+      <button class="more-button" id="moreButton" type="button">
+        <span>
+          <strong>更多</strong>
+          <small>打开完整密码库进行管理或解锁</small>
+        </span>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m9 18 6-6-6-6"></path>
+        </svg>
+      </button>
+    </div>
+  </main>
+
+  <script src="quick.js"></script>
+</body>
+</html>

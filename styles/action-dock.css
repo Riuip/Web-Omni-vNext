@@ -1,0 +1,370 @@
+#web-omni-action-dock {
+  all: initial !important;
+  position: fixed !important;
+  top: auto !important;
+  right: max(8px, env(safe-area-inset-right)) !important;
+  bottom: max(8px, env(safe-area-inset-bottom)) !important;
+  left: auto !important;
+  z-index: 2147483646 !important;
+  width: min(304px, calc(100vw - 20px)) !important;
+  max-height: min(328px, calc(100vh - 16px)) !important;
+  display: block !important;
+  box-sizing: border-box !important;
+  overflow: hidden !important;
+  color-scheme: dark !important;
+  direction: ltr !important;
+  color: var(--wo-text) !important;
+  background: var(--wo-surface-canvas) !important;
+  border: 1px solid var(--wo-border) !important;
+  border-radius: var(--wo-radius-md, 6px) !important;
+  box-shadow: var(--wo-shadow-panel) !important;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  letter-spacing: 0 !important;
+  isolation: isolate !important;
+  contain: layout style !important;
+  transition:
+    width 220ms var(--wo-ease),
+    max-height 220ms var(--wo-ease),
+    border-radius 220ms var(--wo-ease),
+    transform 220ms var(--wo-ease),
+    opacity 180ms var(--wo-ease) !important;
+}
+
+#web-omni-action-dock[data-positioned="true"] {
+  top: var(--wo-action-dock-top) !important;
+  bottom: auto !important;
+}
+
+#web-omni-action-dock[data-side="left"] {
+  right: auto !important;
+  left: max(8px, env(safe-area-inset-left)) !important;
+}
+
+#web-omni-action-dock[data-side="right"] {
+  right: max(8px, env(safe-area-inset-right)) !important;
+  left: auto !important;
+}
+
+#web-omni-action-dock[data-dragging="true"] {
+  right: auto !important;
+  left: var(--wo-action-dock-drag-left) !important;
+  transform: none !important;
+  transition: none !important;
+}
+
+#web-omni-action-dock[hidden] {
+  display: none !important;
+}
+
+#web-omni-action-dock.wo-action-dock-entering {
+  opacity: 0 !important;
+}
+
+#web-omni-action-dock *,
+#web-omni-action-dock *::before,
+#web-omni-action-dock *::after {
+  box-sizing: border-box !important;
+  letter-spacing: 0 !important;
+}
+
+#web-omni-action-dock .wo-action-dock-header {
+  min-height: 40px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 0 !important;
+  padding: 5px 5px 5px 10px !important;
+  color: var(--wo-text) !important;
+  background: var(--wo-surface-raised) !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--wo-border) !important;
+  border-radius: 0 !important;
+  cursor: grab !important;
+  touch-action: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+#web-omni-action-dock.wo-action-dock-dragging .wo-action-dock-header {
+  cursor: grabbing !important;
+}
+
+#web-omni-action-dock .wo-action-dock-header:focus {
+  outline: 0 !important;
+}
+
+#web-omni-action-dock .wo-action-dock-header:focus-visible {
+  outline: 2px solid var(--wo-blue) !important;
+  outline-offset: -3px !important;
+}
+
+#web-omni-action-dock .wo-action-dock-status {
+  width: 7px !important;
+  height: 7px !important;
+  flex: 0 0 7px !important;
+  border-radius: 50% !important;
+  background: var(--wo-green) !important;
+  box-shadow: 0 0 0 2px rgba(53, 197, 111, .13) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-title {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  color: var(--wo-text) !important;
+  font: 600 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+#web-omni-action-dock .wo-action-dock-toggle {
+  all: unset !important;
+  position: relative !important;
+  width: 28px !important;
+  height: 28px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  flex: 0 0 28px !important;
+  border-radius: var(--wo-radius-sm) !important;
+  color: var(--wo-text-secondary) !important;
+  background: transparent !important;
+  cursor: pointer !important;
+  transition: color var(--wo-transition-fast), background var(--wo-transition-fast) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-toggle:hover {
+  color: var(--wo-text) !important;
+  background: var(--wo-surface-hover) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-toggle-icon {
+  display: block !important;
+  color: inherit !important;
+  font: 600 20px/1 sans-serif !important;
+}
+
+#web-omni-action-dock .wo-action-dock-toggle-status,
+#web-omni-action-dock .wo-action-dock-toggle-count {
+  display: none !important;
+}
+
+#web-omni-action-dock .wo-action-dock-list {
+  margin: 0 !important;
+  padding: 2px 0 !important;
+  max-height: min(286px, calc(100vh - 56px)) !important;
+  overflow: auto !important;
+  overscroll-behavior: contain !important;
+  scrollbar-width: thin !important;
+  scrollbar-color: var(--wo-border-strong) transparent !important;
+  transition: max-height 220ms var(--wo-ease), opacity 160ms var(--wo-ease) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-item {
+  min-height: 44px !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  margin: 0 !important;
+  padding: 6px 6px 6px 10px !important;
+  color: var(--wo-text) !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 1px solid rgba(48, 52, 60, .65) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-item:last-child {
+  border-bottom: 0 !important;
+}
+
+#web-omni-action-dock .wo-action-dock-copy {
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
+}
+
+#web-omni-action-dock .wo-action-dock-name {
+  display: block !important;
+  overflow: hidden !important;
+  color: var(--wo-text) !important;
+  font: 600 12px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+#web-omni-action-dock .wo-action-dock-meta {
+  display: block !important;
+  margin-top: 1px !important;
+  overflow: hidden !important;
+  color: var(--wo-text-muted) !important;
+  font: 400 10.5px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+#web-omni-action-dock .wo-action-dock-controls {
+  display: flex !important;
+  align-items: center !important;
+  gap: 3px !important;
+  flex: 0 0 auto !important;
+}
+
+#web-omni-action-dock .wo-action-dock-control {
+  all: unset !important;
+  width: 26px !important;
+  height: 26px !important;
+  display: inline-grid !important;
+  place-items: center !important;
+  flex: 0 0 26px !important;
+  color: var(--wo-text-secondary) !important;
+  background: transparent !important;
+  border-radius: var(--wo-radius-sm) !important;
+  cursor: pointer !important;
+  font: 600 14px/1 sans-serif !important;
+  transition: color var(--wo-transition-fast), background var(--wo-transition-fast) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-control:hover {
+  color: var(--wo-text) !important;
+  background: var(--wo-surface-hover) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-control[data-control="disable"]:hover,
+#web-omni-action-dock .wo-action-dock-control[data-control="stop"]:hover {
+  color: #ff8a8a !important;
+  background: rgba(239, 98, 98, .12) !important;
+}
+
+#web-omni-action-dock .wo-action-dock-control:disabled {
+  opacity: .45 !important;
+  cursor: wait !important;
+}
+
+#web-omni-action-dock :where(button):focus {
+  outline: 0 !important;
+}
+
+#web-omni-action-dock :where(button):focus-visible {
+  outline: 2px solid var(--wo-blue) !important;
+  outline-offset: 2px !important;
+}
+
+#web-omni-action-dock .wo-action-dock-error {
+  color: var(--wo-red) !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] {
+  width: 44px !important;
+  min-width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  max-height: 44px !important;
+  border-radius: 50% !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="right"]:not([data-dragging="true"]) {
+  right: max(0px, env(safe-area-inset-right)) !important;
+  transform: translateX(20px) !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="left"]:not([data-dragging="true"]) {
+  left: max(0px, env(safe-area-inset-left)) !important;
+  transform: translateX(-20px) !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="right"]:not([data-dragging="true"]):hover,
+#web-omni-action-dock[data-collapsed="true"][data-side="right"]:not([data-dragging="true"]):has(:focus-visible),
+#web-omni-action-dock[data-collapsed="true"][data-side="left"]:not([data-dragging="true"]):hover,
+#web-omni-action-dock[data-collapsed="true"][data-side="left"]:not([data-dragging="true"]):has(:focus-visible) {
+  transform: translateX(0) !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-header {
+  width: 44px !important;
+  min-width: 44px !important;
+  height: 44px !important;
+  min-height: 44px !important;
+  gap: 0 !important;
+  padding: 0 !important;
+  background: var(--wo-surface-raised) !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  cursor: pointer !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-status,
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-title,
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-toggle-icon {
+  display: none !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-toggle {
+  width: 44px !important;
+  height: 44px !important;
+  flex-basis: 44px !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  touch-action: none !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-toggle-status {
+  position: absolute !important;
+  top: 7px !important;
+  width: 6px !important;
+  height: 6px !important;
+  display: block !important;
+  border-radius: 50% !important;
+  background: var(--wo-green) !important;
+  box-shadow: 0 0 0 2px rgba(53, 197, 111, .16) !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-toggle-count {
+  position: absolute !important;
+  top: 14px !important;
+  width: 24px !important;
+  height: 20px !important;
+  display: grid !important;
+  place-items: center !important;
+  overflow: hidden !important;
+  color: var(--wo-text) !important;
+  font: 700 10.5px/20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="right"] .wo-action-dock-toggle-count {
+  left: 0 !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="right"] .wo-action-dock-toggle-status {
+  left: 17px !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="left"] .wo-action-dock-toggle-count {
+  right: 0 !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"][data-side="left"] .wo-action-dock-toggle-status {
+  right: 17px !important;
+}
+
+#web-omni-action-dock[data-collapsed="true"] .wo-action-dock-list {
+  max-height: 0 !important;
+  padding: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden !important;
+}
+
+@media (max-width: 340px) {
+  #web-omni-action-dock[data-collapsed="false"] {
+    width: calc(100vw - 16px) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #web-omni-action-dock,
+  #web-omni-action-dock .wo-action-dock-list,
+  #web-omni-action-dock .wo-action-dock-toggle,
+  #web-omni-action-dock .wo-action-dock-control {
+    transition-duration: 1ms !important;
+  }
+}

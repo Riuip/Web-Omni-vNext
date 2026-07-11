@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web-Omni | 录屏</title>
+  <link rel="stylesheet" href="../styles/command-surface.css">
+  <link rel="stylesheet" href="recorder.css">
+</head>
+<body class="wo-command-surface" data-wo-command-surface>
+  <div class="app-shell">
+    <header class="page-header">
+      <div class="wo-brand">
+        <div class="wo-brand-mark" aria-hidden="true">WO</div>
+        <div class="wo-brand-copy">
+          <p class="wo-eyebrow">Web-Omni vNext</p>
+          <h1 class="wo-page-title">录屏</h1>
+          <p class="wo-page-subtitle">录整个屏幕、单个窗口或当前标签页，支持系统音频和可选麦克风。</p>
+        </div>
+      </div>
+      <div class="status-pill" id="statusPill">待命</div>
+    </header>
+
+    <main class="page-grid">
+      <section class="panel control-panel">
+        <div class="panel-heading">
+          <h2>录制控制</h2>
+          <p>开始录制后请保持本页打开。系统共享结束时，录制会自动停止并导出结果。</p>
+        </div>
+
+        <div class="field-grid">
+          <label class="field">
+            <span>文件名前缀</span>
+            <input id="filenamePrefix" type="text" maxlength="48" autocomplete="off" spellcheck="false" value="web-omni-recording">
+          </label>
+
+          <label class="toggle-field" for="microphoneToggle">
+            <div>
+              <span class="toggle-title">包含麦克风</span>
+              <span class="toggle-note">开始录制前决定，录制中不可切换。</span>
+            </div>
+            <input id="microphoneToggle" type="checkbox">
+          </label>
+        </div>
+
+        <div class="preview-name">
+          <span>文件名预览</span>
+          <strong id="filenamePreview">web-omni-recording-00000000-000000.webm</strong>
+        </div>
+
+        <div class="button-row">
+          <button class="btn btn-primary" id="startBtn">开始录制</button>
+          <button class="btn" id="pauseBtn" disabled>暂停</button>
+          <button class="btn btn-danger" id="stopBtn" disabled>停止</button>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">录制时长</span>
+            <strong class="stat-value" id="timerValue">00:00</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">音频来源</span>
+            <strong class="stat-value stat-value-small" id="audioValue">未开始</strong>
+          </div>
+        </div>
+
+        <div class="info-box" id="captureHint">
+          点击“开始录制”后，浏览器会弹出系统共享选择器。你可以录整个屏幕、某个窗口，或当前标签页。
+        </div>
+
+        <div class="warning-box" id="stayOpenNotice" hidden>
+          录制过程中请保持本页打开。关闭本页会结束当前录制会话。
+        </div>
+
+        <div class="notice-box" id="noticeBox" hidden></div>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-heading">
+          <h2>预览</h2>
+          <p>录制时显示实时预览，结束后切换为录制结果回放。</p>
+        </div>
+
+        <div class="preview-stage">
+          <video id="previewVideo" playsinline controls muted></video>
+          <div class="preview-empty" id="previewEmpty">
+            <strong>等待开始</strong>
+            <span>开始录制后，这里会显示实时画面和录制完成后的回放。</span>
+          </div>
+        </div>
+
+        <div class="preview-footer">
+          <span id="sessionSummary">尚未开始录制</span>
+          <button class="btn btn-secondary" id="focusExistingBtn" hidden>返回当前录制器</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="recorder.js"></script>
+</body>
+</html>

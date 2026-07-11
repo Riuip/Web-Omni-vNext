@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web-Omni | 局域网传输</title>
+  <link rel="stylesheet" href="../styles/brand-theme.css">
+  <link rel="stylesheet" href="../styles/command-surface.css">
+  <link rel="stylesheet" href="transfer.css">
+</head>
+<body class="wo-command-surface" data-wo-command-surface>
+  <div class="wo-page lan-page" id="pcApp">
+    <header class="wo-page-header lan-app-header">
+      <div class="wo-brand">
+        <div class="wo-brand-mark" aria-hidden="true">WO</div>
+        <div class="wo-brand-copy">
+          <p class="wo-eyebrow">Web-Omni vNext</p>
+          <h1 class="wo-page-title">局域网传输</h1>
+        </div>
+      </div>
+
+      <div class="lan-header-tools">
+        <div class="theme-switcher" role="group" aria-label="主题模式">
+          <span class="theme-switcher-label">主题</span>
+          <button type="button" class="theme-btn" data-theme-mode="auto" aria-pressed="true">自动</button>
+          <button type="button" class="theme-btn" data-theme-mode="dark" aria-pressed="false">深色</button>
+          <button type="button" class="theme-btn" data-theme-mode="light" aria-pressed="false">浅色</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="lan-chat-layout">
+      <aside class="panel chat-sidebar">
+        <div class="panel-body sidebar-shell">
+          <section class="sidebar-status-card">
+            <div class="status-pill lan-status-pill connecting" id="connStatus">
+              <span class="dot"></span>
+              <span id="connText">正在初始化连接...</span>
+            </div>
+
+            <div class="pairing-code-card">
+              <span class="pairing-code-label">当前房间码</span>
+              <div class="room-code-display" id="roomCodeDisplay">------</div>
+              <div class="pairing-actions">
+                <button class="btn btn-secondary btn-sm" id="copyCode" type="button">复制房间码</button>
+                <button class="btn btn-sm" id="reconnectBtn" type="button">重新生成</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="sidebar-qr-card">
+            <div class="sidebar-section-head">
+              <span class="panel-kicker">手机加入</span>
+              <h3>扫码或导出手机页</h3>
+              <p>手机连上后，就会和电脑一起出现在右侧聊天会话里。</p>
+            </div>
+
+            <div class="qr-box" id="qrBox">
+              <div id="qrTarget" class="qr-placeholder">二维码生成中...</div>
+            </div>
+
+            <div class="export-actions">
+              <button class="btn btn-primary" id="downloadMobile" type="button">下载手机页面</button>
+              <button class="btn" id="downloadMobileKit" type="button">导出局域网页包 ZIP</button>
+            </div>
+
+            <div class="method-list">
+              <article class="method-item">
+                <strong class="method-title">模式 A</strong>
+                <p class="method-copy">把 HTML 发到手机，用浏览器打开后输入房间码连接。</p>
+              </article>
+              <article class="method-item">
+                <strong class="method-title">模式 B</strong>
+                <p class="method-copy">导出 ZIP，在电脑上启动本地网页服务，再让手机浏览器访问地址。</p>
+              </article>
+            </div>
+          </section>
+        </div>
+      </aside>
+
+      <section class="panel conversation-panel">
+        <div class="conversation-toolbar">
+          <button
+            class="sidebar-toggle"
+            id="sidebarToggle"
+            type="button"
+            aria-label="折叠侧栏"
+            aria-expanded="true"
+            title="折叠侧栏"
+          >
+            <span class="sidebar-toggle-pane" aria-hidden="true"></span>
+            <span class="sidebar-toggle-arrow" aria-hidden="true">←</span>
+          </button>
+          <div class="conversation-heading">
+            <strong>传输会话</strong>
+            <span>点对点连接</span>
+          </div>
+        </div>
+
+        <div class="conversation-surface" id="conversationSurface">
+          <div class="conversation-stream" id="conversationStream">
+            <div class="conversation-empty" id="conversationEmpty">
+              <p class="conversation-empty-title">连接设备后就可以开始传了</p>
+              <p class="conversation-empty-copy">你可以直接拖文件进来，也可以在下方输入框里发送文字、验证码、链接和临时说明。粘贴图片或截图会按文件发送。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-shell">
+          <input type="file" id="fileInput" multiple hidden>
+
+          <div class="chat-composer">
+            <textarea
+              id="chatInput"
+              class="chat-input"
+              rows="1"
+              placeholder="例如：验证码、链接、临时说明。Enter 发送，Shift + Enter 换行"
+              spellcheck="false"
+            ></textarea>
+
+            <div class="composer-bottom">
+              <div class="composer-left">
+                <button class="composer-plus" id="pickFileBtn" type="button" aria-label="发送文件">+</button>
+                <div class="composer-inline-copy">
+                  <div class="hint" id="chatHint">连接后即可发送，也支持直接粘贴图片。</div>
+                </div>
+              </div>
+
+              <div class="composer-right">
+                <div class="chat-counter chat-counter-inline" id="chatCounter">0 / 32768 字节</div>
+                <button class="btn btn-primary send-chat-btn" id="sendChatBtn" type="button" disabled aria-label="发送消息">↑</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="qrcode.min.js"></script>
+  <script src="peerjs.min.js"></script>
+  <script src="transfer.js"></script>
+</body>
+</html>

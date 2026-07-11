@@ -1,0 +1,46 @@
+:where(.wo-command-surface, [data-wo-command-surface], #web-omni-command-hub-overlay, #web-omni-action-dock) {
+  color-scheme: dark;
+  --wo-surface-canvas: #0f1012;
+  --wo-surface-raised: #17191d;
+  --wo-surface-hover: #202329;
+  --wo-surface-active: #252a32;
+  --wo-border: #30343c;
+  --wo-border-strong: #444a55;
+  --wo-text: #f2f4f7;
+  --wo-text-secondary: #b7bdc8;
+  --wo-text-muted: #858d9a;
+  --wo-blue: #4c8dff;
+  --wo-green: #35c56f;
+  --wo-amber: #f0ad3d;
+  --wo-red: #ef6262;
+  --wo-radius-sm: 4px;
+  --wo-radius-md: 6px;
+  --wo-radius-lg: 8px;
+  --wo-ease: cubic-bezier(.32, 0, .18, 1);
+  --wo-transition-fast: 180ms var(--wo-ease);
+  --wo-transition-panel: 420ms var(--wo-ease);
+  --wo-shadow-panel: 0 18px 48px rgba(0, 0, 0, .42);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0;
+}
+
+:where(.wo-command-surface, [data-wo-command-surface], #web-omni-command-hub-overlay, #web-omni-action-dock)
+  :where(a, button, input, select, textarea):focus {
+  outline: 0;
+}
+
+:where(.wo-command-surface, [data-wo-command-surface], #web-omni-command-hub-overlay, #web-omni-action-dock)
+  :where(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--wo-blue);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(.wo-command-surface, [data-wo-command-surface], #web-omni-command-hub-overlay, #web-omni-action-dock),
+  :where(.wo-command-surface, [data-wo-command-surface], #web-omni-command-hub-overlay, #web-omni-action-dock) * {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web-Omni | 密码库</title>
+  <link rel="stylesheet" href="../styles/command-surface.css">
+  <link rel="stylesheet" href="vault.css">
+</head>
+<body class="wo-command-surface">
+  <div class="wo-page vault-page">
+    <header class="wo-page-header">
+      <div class="wo-brand">
+        <div class="wo-brand-mark" aria-hidden="true">WO</div>
+        <div class="wo-brand-copy">
+          <p class="wo-eyebrow">Web-Omni</p>
+          <h1 class="wo-page-title">密码库</h1>
+        </div>
+      </div>
+      <div id="headerBtns" class="vault-header-actions" style="display:none;"></div>
+    </header>
+
+    <div id="authScreen"></div>
+
+    <div id="mainScreen" style="display:none;">
+      <section class="panel vault-shell">
+        <div class="tabs" id="mainTabs">
+          <button class="tab active" data-tab="vault">密码库 <span class="badge" id="countBadge">0</span></button>
+          <button class="tab" data-tab="generator">生成器</button>
+        </div>
+        <div class="vault-content">
+          <div id="vaultTab"></div>
+          <div id="generatorTab" style="display:none;"></div>
+        </div>
+      </section>
+
+      <div class="sec-info">AES-256-GCM 本地加密 · PBKDF2 密钥派生 · 凭据仅保存在本机</div>
+    </div>
+  </div>
+  <script src="vault.js"></script>
+</body>
+</html>

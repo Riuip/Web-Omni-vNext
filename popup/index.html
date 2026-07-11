@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web-Omni 首页</title>
+  <link rel="stylesheet" href="../styles/command-surface.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="wo-command-surface">
+  <div class="popup-shell">
+    <header class="popup-topbar">
+      <div class="popup-brand">
+        <div class="wo-side-mark" aria-hidden="true"><span>WO</span></div>
+        <div class="popup-brand-copy">
+          <p class="popup-eyebrow">Web-Omni vNext</p>
+          <h1>首页</h1>
+          <p>常用工具、天气和翻译，一页直达。</p>
+        </div>
+      </div>
+      <div class="popup-badge">预览版</div>
+    </header>
+
+    <main class="popup-main">
+      <section class="popup-panel context-panel">
+        <div class="context-chip">
+          <span>当前页</span>
+          <strong id="toggleScope">检测中</strong>
+        </div>
+        <div class="context-chip">
+          <span>建议</span>
+          <strong id="suggestionCount">2</strong>
+        </div>
+      </section>
+
+      <section class="popup-panel">
+        <div class="section-title">
+          <h2>建议功能</h2>
+          <span id="suggestionHint">根据当前页面内容</span>
+        </div>
+        <div class="suggestion-grid">
+          <button class="suggestion-card" id="suggestTranslateSelected" type="button">
+            <span class="suggestion-label">翻译建议</span>
+            <strong id="suggestTranslateTitle">快速翻译一段文字</strong>
+            <small id="suggestTranslateCopy">如果当前页面有选中文本，会自动带入翻译框。</small>
+          </button>
+          <button class="suggestion-card" id="suggestWeatherAction" type="button">
+            <span class="suggestion-label">天气建议</span>
+            <strong id="suggestWeatherTitle">查看今天的天气</strong>
+            <small id="suggestWeatherCopy">支持按城市查询，也可以尝试定位获取当前天气。</small>
+          </button>
+        </div>
+      </section>
+
+      <section class="popup-panel">
+        <div class="section-title">
+          <h2>快捷入口</h2>
+          <span>常用</span>
+        </div>
+        <div class="entry-grid">
+          <button class="tool-card tool-card-primary" data-page="lan-transfer/index.html" type="button">
+            <span class="tool-icon">LAN</span>
+            <span class="tool-text">
+              <strong>局域网传输</strong>
+              <small>把文件、图片、链接和文本放进同一条会话。</small>
+            </span>
+          </button>
+
+          <button class="tool-card" data-page="screen-recorder/index.html" type="button">
+            <span class="tool-icon">REC</span>
+            <span class="tool-text">
+              <strong>录屏</strong>
+              <small>录整个屏幕、窗口或当前标签页。</small>
+            </span>
+          </button>
+
+          <button class="tool-card" data-page="vault/index.html" type="button">
+            <span class="tool-icon">KEY</span>
+            <span class="tool-text">
+              <strong>密码库</strong>
+              <small>本地加密保存临时账号和常用密码。</small>
+            </span>
+          </button>
+
+          <button class="tool-card" data-jump-target="translatePanel" type="button">
+            <span class="tool-icon">TR</span>
+            <span class="tool-text">
+              <strong>翻译</strong>
+              <small>把当前选中文本或短句快速翻译。</small>
+            </span>
+          </button>
+
+          <button class="tool-card tool-card-wide" data-command-hub="true" type="button">
+            <span class="tool-icon">HUB</span>
+            <span class="tool-text">
+              <strong>快捷中枢</strong>
+              <small>在当前网页里直接显示或隐藏 Command Hub。</small>
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section class="popup-panel weather-panel" id="weatherPanel">
+        <div class="section-title">
+          <h2>天气</h2>
+          <span>Open-Meteo</span>
+        </div>
+
+        <div class="field-row">
+          <input id="weatherQuery" class="popup-input" type="text" placeholder="输入城市，例如：深圳 / Hong Kong" autocomplete="off" spellcheck="false">
+          <button id="weatherSearchBtn" class="mini-btn" type="button">查询</button>
+          <button id="weatherLocateBtn" class="mini-btn mini-btn-ghost" type="button">定位</button>
+        </div>
+
+        <div class="weather-card" id="weatherCard">
+          <div class="weather-topline">
+            <div class="weather-location">
+              <strong id="weatherLocation">还没有天气结果</strong>
+              <span id="weatherUpdated">等待查询</span>
+            </div>
+            <button id="weatherRefreshBtn" class="text-btn" type="button">刷新</button>
+          </div>
+
+          <div class="weather-main">
+            <div class="weather-temp" id="weatherTemp">--</div>
+            <div class="weather-summary">
+              <strong id="weatherDesc">输入城市后获取天气</strong>
+              <span id="weatherRange">-- / --</span>
+            </div>
+          </div>
+
+          <div class="weather-meta">
+            <div class="meta-chip">
+              <span>体感</span>
+              <strong id="weatherFeels">--</strong>
+            </div>
+            <div class="meta-chip">
+              <span>风速</span>
+              <strong id="weatherWind">--</strong>
+            </div>
+          </div>
+        </div>
+
+        <p class="panel-note" id="weatherStatus">输入城市，或尝试定位。</p>
+      </section>
+
+      <section class="popup-panel translate-panel" id="translatePanel">
+        <div class="section-title">
+          <h2>翻译</h2>
+          <span>短句与整页</span>
+        </div>
+
+        <div class="translate-toolbar">
+          <select id="translateSource" class="popup-select"></select>
+          <button id="swapLanguagesBtn" class="swap-btn" type="button" aria-label="交换语言">↔</button>
+          <select id="translateTarget" class="popup-select"></select>
+        </div>
+
+        <div class="translate-page-meta" id="translatePageMeta">当前页正文尚未翻译。</div>
+
+        <textarea id="translateInput" class="popup-textarea" rows="5" placeholder="输入一句话，或者把当前页面选中的文字填进来。适合短句、验证码说明和临时链接描述。"></textarea>
+
+        <div class="translate-meta-row">
+          <span id="translateCount">0 / 450 bytes</span>
+          <button id="useSelectionBtn" class="text-btn" type="button">填入选中文本</button>
+        </div>
+
+        <div class="translate-actions">
+          <button id="translateRunBtn" class="mini-btn" type="button">翻译</button>
+          <button id="translateCopyBtn" class="mini-btn mini-btn-ghost" type="button">复制结果</button>
+          <button id="translatePageBtn" class="mini-btn mini-btn-ghost" type="button">翻译当前页面正文</button>
+          <button id="translateRestoreBtn" class="mini-btn mini-btn-ghost" type="button" disabled>恢复原文</button>
+        </div>
+
+        <div class="translation-output is-placeholder" id="translateOutput">翻译结果会显示在这里。</div>
+        <p class="panel-note" id="translateStatus">短句适合直接翻译；整页翻译会分批替换正文节点，并保留恢复原文入口。</p>
+      </section>
+
+      <section class="popup-panel">
+        <div class="section-title">
+          <h2>一键开关</h2>
+          <span>当前网页</span>
+        </div>
+
+        <!-- 统一使用 side-panel 的 wo-toggle-chip 风格 -->
+        <div class="wo-toggle-grid" id="toggleList">
+          <button class="wo-toggle-chip" data-toggle-action="TOGGLE_COMMAND_HUB" data-state-key="commandHub" type="button">
+            <span class="wo-chip-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 11h.01M11 11h.01M7 14h6"/></svg></span>
+            <span class="wo-chip-text"><strong>Command Hub</strong><small>显示/隐藏 Hub</small></span>
+            <span class="wo-chip-dot" aria-hidden="true"></span>
+          </button>
+
+          <button class="wo-toggle-chip" data-toggle-action="TOGGLE_DARK_MODE" data-state-key="darkMode" type="button">
+            <span class="wo-chip-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 0 1 11.2 3a7 7 0 1 0 9.8 9.8z"/></svg></span>
+            <span class="wo-chip-text"><strong>暗黑模式</strong><small>强制深色</small></span>
+            <span class="wo-chip-dot" aria-hidden="true"></span>
+          </button>
+
+          <button class="wo-toggle-chip" data-toggle-action="TOGGLE_READER_MODE" data-state-key="readerMode" type="button">
+            <span class="wo-chip-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h11l5 5v9H4z"/><path d="M15 5v5h5M8 13h7M8 16h7"/></svg></span>
+            <span class="wo-chip-text"><strong>阅读模式</strong><small>正文优先</small></span>
+            <span class="wo-chip-dot" aria-hidden="true"></span>
+          </button>
+
+          <button class="wo-toggle-chip" data-toggle-action="AUDIO_NORMALIZE_TOGGLE" data-state-key="audioNormalize" type="button">
+            <span class="wo-chip-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4M8 7v10M12 5v14M16 8v8M20 11v2"/></svg></span>
+            <span class="wo-chip-text"><strong>音频均衡</strong><small>护耳</small></span>
+            <span class="wo-chip-dot" aria-hidden="true"></span>
+          </button>
+
+          <button class="wo-toggle-chip" data-toggle-action="INPUT_TM_TOGGLE" data-state-key="inputTM" type="button">
+            <span class="wo-chip-icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 12h6M7 9h10"/></svg></span>
+            <span class="wo-chip-text"><strong>输入框保护</strong><small>自动备份</small></span>
+            <span class="wo-chip-dot" aria-hidden="true"></span>
+          </button>
+        </div>
+        <p class="wo-note" style="margin-top:10px;font-size:11px;color:var(--wo-text-muted);">点亮表示已对当前页面生效。</p>
+      </section>
+    </main>
+  </div>
+
+  <script src="../shared/action-registry.js"></script>
+  <script src="../shared/action-client.js"></script>
+  <script src="../shared/network.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
