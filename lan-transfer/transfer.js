@@ -2127,10 +2127,21 @@
       .split("__WO_RUNTIME_CONFIG__").join(JSON.stringify(runtimeConfig))
       .split("__WO_TEXT_LIMIT__").join(String(TEXT_LIMIT_BYTES));
 
-    return htmlTemplate
-      .replace("__WO_PEER_JS__", sanitizeInlineScript(peerJsSource))
-      .replace("__WO_SECURE_CHANNEL__", sanitizeInlineScript(secureChannelSource))
-      .replace("__WO_MOBILE_RUNTIME__", sanitizeInlineScript(runtimeSource));
+    const html = replaceInlineMarker(
+      replaceInlineMarker(
+        replaceInlineMarker(htmlTemplate, "__WO_PEER_JS__", peerJsSource),
+        "__WO_SECURE_CHANNEL__",
+        secureChannelSource
+      ),
+      "__WO_MOBILE_RUNTIME__",
+      runtimeSource
+    );
+    const unresolvedMarker = ["__WO_PEER_JS__", "__WO_SECURE_CHANNEL__", "__WO_MOBILE_RUNTIME__"]
+      .find((marker) => html.includes(marker));
+    if (unresolvedMarker) {
+      throw new Error("Generated mobile page contains unresolved marker: " + unresolvedMarker);
+    }
+    return html;
   }
 
   async function loadPackageText(path) {
@@ -2140,6 +2151,13 @@
 
   function sanitizeInlineScript(source) {
     return String(source || "").replace(/<\/script/gi, "<\\/script");
+  }
+
+  function replaceInlineMarker(source, marker, script) {
+    if (!source.includes(marker)) {
+      throw new Error("Mobile page template is missing marker: " + marker);
+    }
+    return source.replace(marker, () => sanitizeInlineScript(script));
   }
 
   async function downloadGeneratedFile(filename, content, mimeType) {

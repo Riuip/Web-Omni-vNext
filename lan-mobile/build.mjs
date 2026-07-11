@@ -29,10 +29,21 @@ const runtimeSource = runtime
   .split("__WO_RUNTIME_CONFIG__").join(JSON.stringify(defaults))
   .split("__WO_TEXT_LIMIT__").join(String(32 * 1024));
 
-const html = template
-  .replace("__WO_PEER_JS__", sanitize(peerjs))
-  .replace("__WO_SECURE_CHANNEL__", sanitize(secureChannel))
-  .replace("__WO_MOBILE_RUNTIME__", sanitize(runtimeSource));
+const html = injectInlineScript(
+  injectInlineScript(
+    injectInlineScript(template, "__WO_PEER_JS__", peerjs),
+    "__WO_SECURE_CHANNEL__",
+    secureChannel,
+  ),
+  "__WO_MOBILE_RUNTIME__",
+  runtimeSource,
+);
+
+const unresolvedMarker = ["__WO_PEER_JS__", "__WO_SECURE_CHANNEL__", "__WO_MOBILE_RUNTIME__"]
+  .find((marker) => html.includes(marker));
+if (unresolvedMarker) {
+  throw new Error(`Generated mobile page contains unresolved marker: ${unresolvedMarker}`);
+}
 
 for (const output of [
   join(here, "dist", "index.html"),
@@ -44,4 +55,11 @@ for (const output of [
 
 function sanitize(source) {
   return String(source || "").replace(/<\/script/gi, "<\\/script");
+}
+
+function injectInlineScript(source, marker, script) {
+  if (!source.includes(marker)) {
+    throw new Error(`Mobile page template is missing marker: ${marker}`);
+  }
+  return source.replace(marker, () => sanitize(script));
 }
