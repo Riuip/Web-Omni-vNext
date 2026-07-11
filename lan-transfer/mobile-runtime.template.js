@@ -106,6 +106,10 @@
         setThemeMode(String(button.dataset.themeMode || "auto"));
       });
     });
+    $("statusBar").addEventListener("click", function() {
+      const drawer = $("connectionDrawer");
+      setConnectionDrawerCollapsed(!drawer.classList.contains("collapsed"));
+    });
     $("connectBtn").addEventListener("click", function() { connectToDesktop(0); });
     $("pickFileBtn").addEventListener("click", function() { $("fileInput").click(); });
     $("fileInput").addEventListener("change", function(event) {
@@ -302,19 +306,31 @@
   function updateChatComposerState() {
     const text = $("chatInput").value || "";
     const bytes = encoder.encode(text).byteLength;
-    const connected = Boolean(conn && conn.open);
+    const connected = Boolean(conn && isUsableConnection(conn));
     const hasText = Boolean(text.trim());
-    $("chatCounter").textContent = bytes + " / " + TEXT_LIMIT_BYTES + " 字节";
+    $("chatCounter").textContent = bytes + " / " + TEXT_LIMIT_BYTES;
     $("chatCounter").classList.toggle("over-limit", bytes > TEXT_LIMIT_BYTES);
+    $("pickFileBtn").disabled = !connected;
     $("sendChatBtn").disabled = !connected || !hasText || bytes > TEXT_LIMIT_BYTES;
+    syncChatInputHeight($("chatInput"));
 
     if (!connected) {
-      $("chatHint").textContent = "请先连接电脑后再发送，也支持直接粘贴图片或截图。";
+      $("chatHint").textContent = "等待安全连接";
     } else if (bytes > TEXT_LIMIT_BYTES) {
-      $("chatHint").textContent = "单条文本不能超过 32 KB，请删减后再发送。";
+      $("chatHint").textContent = "内容超过 32 KB";
     } else {
-      $("chatHint").textContent = "消息会直接发到当前连接的电脑，链接可点击打开，聊天记录不会本地持久化。";
+      $("chatHint").textContent = "端到端加密";
     }
+  }
+
+  function syncChatInputHeight(input) {
+    if (!input) return;
+    const minHeight = 34;
+    const maxHeight = 112;
+    input.style.height = "0px";
+    const nextHeight = Math.min(Math.max(input.scrollHeight, minHeight), maxHeight);
+    input.style.height = nextHeight + "px";
+    input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
   }
 
   function connectToDesktop(retryAttempt, requestedTarget) {
@@ -1109,7 +1125,7 @@
     const files = Array.from(fileList || []);
     if (files.length === 0) return;
 
-    if (!conn || !conn.open) {
+    if (!conn || !isUsableConnection(conn)) {
       alert("请先连接电脑。");
       return;
     }
@@ -1393,6 +1409,20 @@
   function setStatus(text, state) {
     $("statusText").textContent = text;
     $("statusBar").className = "status" + (state ? " " + state : "");
+    document.body.dataset.connectionState = state || "idle";
+    if (state === "connected") {
+      setConnectionDrawerCollapsed(true);
+    } else if (!state) {
+      setConnectionDrawerCollapsed(false);
+    }
+  }
+
+  function setConnectionDrawerCollapsed(collapsed) {
+    const drawer = $("connectionDrawer");
+    const statusBar = $("statusBar");
+    if (!drawer || !statusBar) return;
+    drawer.classList.toggle("collapsed", Boolean(collapsed));
+    statusBar.setAttribute("aria-expanded", collapsed ? "false" : "true");
   }
 
   function buildChunkKey(transferId, seq) {
