@@ -1,12 +1,21 @@
 ﻿(function() {
   "use strict";
 
-  const CHUNK_SIZE = 64 * 1024;
   const DEVICE_MEMORY_GB = typeof navigator !== "undefined" && typeof navigator.deviceMemory === "number"
     ? navigator.deviceMemory
-    : 4;
-  const RESEND_BATCH_SIZE = DEVICE_MEMORY_GB <= 2 ? 32 : 64;
-  const BUFFER_HIGH_WATER_MARK = (DEVICE_MEMORY_GB <= 2 ? 12 : DEVICE_MEMORY_GB <= 4 ? 20 : 28) * CHUNK_SIZE;
+    : 0;
+  const DEVICE_TRANSFER_PROFILE = DEVICE_MEMORY_GB > 4
+    ? Object.freeze({ chunkSize: 512 * 1024, bufferHighWaterMark: 8 * 1024 * 1024, ackWindowBytes: 32 * 1024 * 1024 })
+    : DEVICE_MEMORY_GB > 2
+      ? Object.freeze({ chunkSize: 256 * 1024, bufferHighWaterMark: 4 * 1024 * 1024, ackWindowBytes: 16 * 1024 * 1024 })
+      : Object.freeze({ chunkSize: 128 * 1024, bufferHighWaterMark: 2 * 1024 * 1024, ackWindowBytes: 8 * 1024 * 1024 });
+  const CHUNK_SIZE = DEVICE_TRANSFER_PROFILE.chunkSize;
+  const LEGACY_CHUNK_SIZE = 64 * 1024;
+  const RESEND_BATCH_SIZE = DEVICE_MEMORY_GB > 2 ? 64 : 32;
+  const BUFFER_HIGH_WATER_MARK = DEVICE_TRANSFER_PROFILE.bufferHighWaterMark;
+  const DEFAULT_ACK_WINDOW_BYTES = DEVICE_TRANSFER_PROFILE.ackWindowBytes;
+  const MEMORY_RECEIVE_LIMIT_BYTES = 32 * 1024 * 1024;
+  const SPEED_SAMPLE_WINDOW_MS = 1500;
   const PROGRESS_UPDATE_INTERVAL_MS = 120;
   const DEFAULT_HASH_ALGORITHM = "sha256";
   const TEXT_LIMIT_BYTES = __WO_TEXT_LIMIT__;
@@ -22,6 +31,7 @@
   const MISSING_CHUNK_RETRY_MS = 1200;
   const MISSING_CHUNK_MAX_ATTEMPTS = 10;
   const COMPLETED_TRANSFER_CACHE_MS = 60000;
+  const COMPLETED_STORE_RETENTION_MS = 10 * 60 * 1000;
   const URL_PATTERN = /\b((?:https?:\/\/|www\.)[^\s<]+[^\s<.,:;"')\]\}])/gi;
   const RECEIVE_DB_NAME = "wo-lan-transfer-vnext-mobile";
   const RECEIVE_STORE_NAME = "chunks";
@@ -63,6 +73,7 @@
   const chunkWriteQueues = new WeakMap();
   const activeChunkWriteQueues = new Set();
   const activeObjectUrls = new Set();
+  const activeReceiveStores = new Set();
   const CHUNK_WRITE_BATCH_SIZE = 8;
   const CHUNK_WRITE_BATCH_DELAY = 35;
   const ACK_BATCH_SIZE = 8;
@@ -495,6 +506,13 @@
         role: "mobile",
         sessionId: SECURE_SESSION.sessionId,
         pairingSecret: SECURE_SESSION.pairingSecret,
+        capabilities: {
+          maxMessageBytes: Math.max(2 * 1024 * 1024, CHUNK_SIZE + 64 * 1024),
+          chunkSize: CHUNK_SIZE,
+          hash: [DEFAULT_HASH_ALGORITHM],
+          resume: true
+        },
+        supportsBinaryEnvelope: !LOCAL_RELAY_URL,
       });
       const v2Transport = secureTransport;
       v2Transport.ready.then(function() {
@@ -570,10 +588,14 @@
       legacy: true,
       negotiatedCapabilities: Object.freeze({
         maxMessageBytes: 2 * 1024 * 1024,
-        chunkSize: CHUNK_SIZE,
+        chunkSize: LEGACY_CHUNK_SIZE,
         hash: Object.freeze(["fnv1a32"]),
         resume: true
       }),
+      featuresReady: Promise.resolve(),
+      get negotiatedFeatures() {
+        return Object.freeze({ binaryEnvelope: false, aeadChunkIntegrity: false, receiverReady: false });
+      },
       send(message) {
         if (!connection.open) return Promise.reject(new Error("legacy connection is closed"));
         connection.send(message);
@@ -599,6 +621,9 @@
         break;
       case "file-ack":
         markOutgoingAcknowledged(message);
+        break;
+      case "file-ready":
+        markOutgoingReady(message);
         break;
       case "file-complete":
         markOutgoingComplete(message);
@@ -872,9 +897,41 @@
     updateFileProgress(transfer.id, pct, speedText);
   }
 
+  function getNegotiatedFeatures() {
+    const features = secureTransport && secureTransport.negotiatedFeatures;
+    return {
+      binaryEnvelope: Boolean(features && features.binaryEnvelope),
+      aeadChunkIntegrity: Boolean(features && features.aeadChunkIntegrity),
+      receiverReady: Boolean(features && features.receiverReady)
+    };
+  }
+
+  async function waitForTransportFeatures(transport) {
+    if (transport && transport.featuresReady && typeof transport.featuresReady.then === "function") {
+      await transport.featuresReady;
+    }
+    return getNegotiatedFeatures();
+  }
+
+  function formatTransferSpeed(transfer, completedBytes) {
+    const now = performance.now();
+    if (!Array.isArray(transfer.speedSamples)) transfer.speedSamples = [];
+    const samples = transfer.speedSamples;
+    const last = samples[samples.length - 1];
+    if (!last || completedBytes !== last.bytes || now - last.at >= 100) {
+      samples.push({ at: now, bytes: completedBytes });
+    }
+    while (samples.length > 2 && samples[1].at < now - SPEED_SAMPLE_WINDOW_MS) samples.shift();
+    if (samples.length < 2) return "准备中";
+    const first = samples[0];
+    const elapsedSeconds = Math.max(.1, (now - first.at) / 1000);
+    return formatSize(Math.max(0, Math.round((completedBytes - first.bytes) / elapsedSeconds))) + "/s";
+  }
+
   async function beginIncomingTransfer(connection, meta) {
     const transferId = String(meta.id || "");
     if (!transferId) return;
+    const features = getNegotiatedFeatures();
 
     const completed = completedIncomingTransfers.get(transferId);
     if (completed) {
@@ -890,25 +947,37 @@
     let hashAlgorithm;
     try {
       hashAlgorithm = pickHashAlgorithm(meta.hashAlgorithm || (legacy ? "fnv1a32" : DEFAULT_HASH_ALGORITHM), legacy);
-    } catch (_) {
+    } catch (error) {
+      rejectIncomingTransfer(connection, transferId, "文件摘要算法不受支持");
       return;
     }
     if (!Number.isSafeInteger(size) || size < 0
       || !Number.isSafeInteger(chunkSize) || chunkSize < 16 * 1024 || chunkSize > activeChunkSize
       || (!secureTransport.legacy && chunkSize !== activeChunkSize)
-      || !Number.isSafeInteger(totalChunks) || totalChunks !== expectedChunks) return;
+      || !Number.isSafeInteger(totalChunks) || totalChunks !== expectedChunks) {
+      rejectIncomingTransfer(connection, transferId, "文件元数据无效");
+      return;
+    }
 
     const existing = incomingTransfers.get(transferId);
     if (existing) {
       if (existing.size === size && existing.totalChunks === totalChunks && existing.chunkSize === chunkSize
         && existing.legacy === legacy && existing.hashAlgorithm === hashAlgorithm) {
         existing.missingRetryAttempts = 0;
+        if (features.receiverReady && existing.storageReady) {
+          safeSend(connection, {
+            type: "file-ready",
+            id: transferId,
+            accepted: true,
+            maxInFlightBytes: existing.maxInFlightBytes
+          });
+        }
         scheduleFileAck(connection, existing, true);
         return;
       }
       clearIncomingTransferTimers(existing);
       incomingTransfers.delete(transferId);
-      await clearStoredChunks(dbPromise, transferId).catch(function() {});
+      await disposeReceiveStore(existing.receiveStore).catch(function() {});
     }
 
     const transfer = {
@@ -919,6 +988,12 @@
       chunkSize: chunkSize,
       legacy: legacy,
       hashAlgorithm: hashAlgorithm,
+      aeadChunkIntegrity: features.aeadChunkIntegrity,
+      maxInFlightBytes: DEFAULT_ACK_WINDOW_BYTES,
+      receiveStore: null,
+      storageReadyPromise: null,
+      storageReady: false,
+      rejected: false,
       receivedChunks: new Set(),
       pendingChunks: new Set(),
       receivedBytes: 0,
@@ -933,11 +1008,46 @@
       missingRetryAttempts: 0,
       finalizePromise: null,
       expectedFileHash: null,
-      integrityFailed: false
+      integrityFailed: false,
+      storageFailed: false,
+      storageError: "",
+      speedSamples: []
     };
 
     incomingTransfers.set(transferId, transfer);
-    addFileItem(transferId, transfer.name, transfer.size, "recv", "接收中...");
+    addFileItem(transferId, transfer.name, transfer.size, "recv", "正在准备存储...");
+    try {
+      transfer.storageReadyPromise = createReceiveStore(transfer);
+      transfer.receiveStore = await transfer.storageReadyPromise;
+      if (incomingTransfers.get(transferId) !== transfer) {
+        await disposeReceiveStore(transfer.receiveStore);
+        return;
+      }
+      transfer.storageReady = true;
+      updateFileStatus(transfer.id, "写入中", "");
+      if (features.receiverReady) {
+        await sendSecure(connection, {
+          type: "file-ready",
+          id: transfer.id,
+          accepted: true,
+          maxInFlightBytes: transfer.maxInFlightBytes
+        });
+      }
+    } catch (error) {
+      transfer.rejected = true;
+      incomingTransfers.delete(transferId);
+      const message = readableStorageError(error);
+      updateFileStatus(transfer.id, message, "error");
+      if (features.receiverReady) {
+        safeSend(connection, { type: "file-ready", id: transfer.id, accepted: false, error: message });
+      }
+    }
+  }
+
+  function rejectIncomingTransfer(connection, transferId, message) {
+    if (getNegotiatedFeatures().receiverReady) {
+      safeSend(connection, { type: "file-ready", id: transferId, accepted: false, error: message });
+    }
   }
 
   async function receiveChunk(connection, payload) {
@@ -960,26 +1070,36 @@
     transfer.pendingChunks.add(seq);
 
     try {
+      if (!transfer.storageReady) {
+        await transfer.storageReadyPromise;
+      }
+      if (incomingTransfers.get(transfer.id) !== transfer || !transfer.receiveStore) return;
       const arrayBuffer = normalizeArrayBuffer(payload.chunk);
       const expectedSize = seq === transfer.totalChunks - 1 ? Math.max(0, transfer.size - (seq * transfer.chunkSize)) : transfer.chunkSize;
-      const chunkHashAlgorithm = pickHashAlgorithm(getHashAlgorithm(payload.hash), transfer.legacy);
-      if (chunkHashAlgorithm !== transfer.hashAlgorithm) throw new Error("Chunk hash policy changed during transfer");
-      const hash = await createChunkHash(arrayBuffer, chunkHashAlgorithm, transfer.legacy);
-      if (arrayBuffer.byteLength !== expectedSize || (payload.hash && payload.hash !== hash)) {
+      let chunkHashValid = true;
+      if (!transfer.aeadChunkIntegrity || payload.hash) {
+        if (!payload.hash) throw new Error("Chunk digest is missing");
+        const chunkHashAlgorithm = pickHashAlgorithm(getHashAlgorithm(payload.hash), transfer.legacy);
+        if (chunkHashAlgorithm !== transfer.hashAlgorithm) throw new Error("Chunk hash policy changed during transfer");
+        const hash = await createChunkHash(arrayBuffer, chunkHashAlgorithm, transfer.legacy);
+        chunkHashValid = payload.hash === hash;
+      }
+      if (arrayBuffer.byteLength !== expectedSize || !chunkHashValid) {
         updateFileStatus(transfer.id, "数据校验失败，正在请求重传...", "error");
         safeSend(connection, { type: "file-resend-request", id: transfer.id, seqs: [seq] });
         return;
       }
 
-      await storeChunk(dbPromise, transfer.id, seq, new Blob([arrayBuffer]));
+      await transfer.receiveStore.write(seq, arrayBuffer);
       if (incomingTransfers.get(transfer.id) !== transfer || transfer.receivedChunks.has(seq)) return;
       transfer.receivedChunks.add(seq);
       transfer.receivedBytes += arrayBuffer.byteLength;
       transfer.missingRetryAttempts = 0;
+      const statusElement = document.querySelector('.file-message[data-id="' + cssEscape(transfer.id) + '"] .file-status.error');
+      if (statusElement) updateFileStatus(transfer.id, "写入中", "");
 
       const pct = transfer.size > 0 ? Math.min(100, Math.round((transfer.receivedBytes / transfer.size) * 100)) : 100;
-      const elapsedSeconds = Math.max(1, (Date.now() - transfer.startTime) / 1000);
-      maybeUpdateTransferProgress(transfer, pct, formatSize(Math.round(transfer.receivedBytes / elapsedSeconds)) + "/s", transfer.receivedChunks.size === transfer.totalChunks);
+      maybeUpdateTransferProgress(transfer, pct, formatTransferSpeed(transfer, transfer.receivedBytes), transfer.receivedChunks.size === transfer.totalChunks);
 
       scheduleFileAck(connection, transfer, transfer.receivedChunks.size === transfer.totalChunks);
 
@@ -990,7 +1110,18 @@
       }
     } catch (error) {
       console.warn("[WO Mobile] Chunk validation failed:", error);
-      updateFileStatus(transfer.id, "分片校验算法不受支持，正在请求重传...", "error");
+      if (isReceiveStorageFailure(error)) {
+        const message = readableStorageError(error);
+        incomingTransfers.delete(transfer.id);
+        updateFileStatus(transfer.id, message, "error");
+        if (getNegotiatedFeatures().receiverReady) {
+          safeSend(connection, { type: "file-ready", id: transfer.id, accepted: false, error: message });
+        }
+        await disposeReceiveStore(transfer.receiveStore).catch(function() {});
+        transfer.receiveStore = null;
+        return;
+      }
+      updateFileStatus(transfer.id, "分片处理失败，正在请求重传...", "error");
       safeSend(connection, { type: "file-resend-request", id: transfer.id, seqs: [seq] });
     } finally {
       transfer.pendingChunks.delete(seq);
@@ -1075,7 +1206,7 @@
   }
 
   async function finalizeAndConfirmIncoming(connection, transfer) {
-    const saved = await finalizeIncomingTransfer(dbPromise, transfer, updateFileStatus);
+    const saved = await finalizeIncomingTransfer(transfer, updateFileStatus);
     if (!saved) {
       if (transfer.integrityFailed) {
         transfer.integrityFailed = false;
@@ -1084,6 +1215,15 @@
         transfer.receivedBytes = 0;
         transfer.missingRetryAttempts = 0;
         requestMissingChunks(connection, transfer);
+      }
+      if (transfer.storageFailed) {
+        incomingTransfers.delete(transfer.id);
+        safeSend(connection, {
+          type: "file-ready",
+          id: transfer.id,
+          accepted: false,
+          error: transfer.storageError || "文件保存失败"
+        });
       }
       return;
     }
@@ -1100,6 +1240,39 @@
     transfer.lastAckCount = Math.max(transfer.lastAckCount, Number(message.receivedCount || 0));
     transfer.lastAckBytes = Math.max(transfer.lastAckBytes, Number(message.receivedBytes || 0));
     transfer.lastAckAt = Date.now();
+    if (transfer.ackWaiters) {
+      Array.from(transfer.ackWaiters).forEach(function(resolve) { resolve(); });
+      transfer.ackWaiters.clear();
+    }
+  }
+
+  function markOutgoingReady(message) {
+    const transfer = outgoingTransfers.get(String(message.id || ""));
+    if (!transfer || !transfer.receiverReadyExpected) return;
+    if (!transfer.receiverReadyResolve) {
+      if (message.accepted === false) {
+        const error = new Error(String(message.error || "接收端已停止文件接收"));
+        error.code = "RECEIVER_REJECTED";
+        transfer.abortError = error;
+        Array.from(transfer.ackWaiters || []).forEach(function(resolve) { resolve(); });
+      }
+      return;
+    }
+    const resolve = transfer.receiverReadyResolve;
+    const reject = transfer.receiverReadyReject;
+    transfer.receiverReadyResolve = null;
+    transfer.receiverReadyReject = null;
+    if (message.accepted === false) {
+      const error = new Error(String(message.error || "接收端无法准备文件存储"));
+      error.code = "RECEIVER_REJECTED";
+      reject(error);
+      return;
+    }
+    const remoteWindow = Number(message.maxInFlightBytes);
+    if (Number.isSafeInteger(remoteWindow) && remoteWindow >= transfer.chunkSize) {
+      transfer.maxInFlightBytes = Math.min(DEFAULT_ACK_WINDOW_BYTES, remoteWindow);
+    }
+    resolve();
   }
 
   function markOutgoingComplete(message) {
@@ -1140,6 +1313,14 @@
         sentBytes: 0,
         lastAckCount: 0,
         lastAckBytes: 0,
+        lastAckAt: 0,
+        maxInFlightBytes: DEFAULT_ACK_WINDOW_BYTES,
+        ackWaiters: new Set(),
+        receiverReadyExpected: false,
+        receiverReadyPromise: null,
+        receiverReadyResolve: null,
+        receiverReadyReject: null,
+        abortError: null,
         lastUiUpdateAt: 0,
         sendAttempts: 0,
         state: "queued",
@@ -1148,7 +1329,8 @@
         completionTimer: null,
         cleanupTimer: null,
         fileHash: null,
-        hashAlgorithm: null
+        hashAlgorithm: null,
+        speedSamples: []
       };
       outgoingTransfers.set(transfer.id, transfer);
       sendQueue.push(transfer);
@@ -1175,7 +1357,7 @@
         armCompletionProbe(connection, transfer);
       } catch (error) {
         console.error("[WO Mobile] Send failed:", error);
-        if (!isPageClosing && transfer.sendAttempts < MAX_SEND_ATTEMPTS) {
+        if (!isPageClosing && error.code !== "RECEIVER_REJECTED" && transfer.sendAttempts < MAX_SEND_ATTEMPTS) {
           transfer.state = "queued";
           sendQueue.unshift(transfer);
           updateFileStatus(transfer.id, conn && conn.open ? "发送受阻，正在重试..." : "连接中断，等待恢复...", "");
@@ -1183,7 +1365,7 @@
           else break;
         } else {
           transfer.state = "failed";
-          updateFileStatus(transfer.id, "发送失败", "error");
+          updateFileStatus(transfer.id, error.code === "RECEIVER_REJECTED" ? error.message : "发送失败", "error");
           scheduleOutgoingCleanup(transfer);
         }
       }
@@ -1195,15 +1377,28 @@
   async function sendTransfer(connection, transfer) {
     if (!isUsableConnection(connection)) throw new Error("connection unavailable");
 
-    updateFileStatus(transfer.id, "发送中...", "");
+    const transport = secureTransport;
+    const features = await waitForTransportFeatures(transport);
+    if (secureTransport !== transport || !isUsableConnection(connection)) throw new Error("connection capabilities changed");
+    updateFileStatus(transfer.id, "传输中", "");
     transfer.startTime = Date.now();
     transfer.sentBytes = 0;
+    transfer.lastAckBytes = 0;
+    transfer.lastAckCount = 0;
+    transfer.lastAckAt = Date.now();
+    transfer.speedSamples = [];
+    transfer.abortError = null;
     transfer.chunkSize = activeChunkSize;
     transfer.totalChunks = Math.ceil(transfer.file.size / transfer.chunkSize) || 1;
     transfer.hashAlgorithm = secureTransport.legacy ? "fnv1a32" : DEFAULT_HASH_ALGORITHM;
     transfer.legacy = Boolean(secureTransport.legacy);
+    transfer.aeadChunkIntegrity = features.aeadChunkIntegrity;
+    transfer.receiverReadyExpected = features.receiverReady;
+    transfer.maxInFlightBytes = DEFAULT_ACK_WINDOW_BYTES;
     transfer.fileHash = null;
     const fileHasher = createFileHasher(transfer.hashAlgorithm, transfer.legacy);
+
+    if (transfer.receiverReadyExpected) prepareReceiverReadyWait(transfer);
 
     await sendSecure(connection, {
       type: "file-meta",
@@ -1216,40 +1411,98 @@
       hashAlgorithm: transfer.hashAlgorithm
     });
 
+    if (transfer.receiverReadyExpected) {
+      updateFileStatus(transfer.id, "等待接收端准备...", "");
+      await waitForReceiverReady(transfer);
+      updateFileStatus(transfer.id, "传输中", "");
+    }
+
+    let nextChunkPromise = readFileChunk(transfer, 0);
     for (let seq = 0; seq < transfer.totalChunks; seq++) {
-      const start = seq * transfer.chunkSize;
-      const end = Math.min(start + transfer.chunkSize, transfer.file.size);
-      const arrayBuffer = await transfer.file.slice(start, end).arrayBuffer();
-      const hash = await createChunkHash(arrayBuffer, transfer.hashAlgorithm, transfer.legacy);
+      if (transfer.abortError) throw transfer.abortError;
+      const arrayBuffer = await nextChunkPromise;
+      nextChunkPromise = seq + 1 < transfer.totalChunks ? readFileChunk(transfer, seq + 1) : null;
+      const hash = transfer.aeadChunkIntegrity
+        ? null
+        : await createChunkHash(arrayBuffer, transfer.hashAlgorithm, transfer.legacy);
       fileHasher.update(arrayBuffer);
 
+      await waitForAckWindow(connection, transfer, arrayBuffer.byteLength);
       await waitForDataChannel(connection);
-      await sendSecure(connection, {
+      const chunkMessage = {
         type: "file-chunk",
         id: transfer.id,
         seq: seq,
         totalChunks: transfer.totalChunks,
         chunkSize: transfer.chunkSize,
-        hash: hash,
         chunk: arrayBuffer
-      });
+      };
+      if (hash) chunkMessage.hash = hash;
+      await sendSecure(connection, chunkMessage);
 
       transfer.sentBytes += arrayBuffer.byteLength;
       const pct = transfer.file.size > 0
         ? Math.min(100, Math.round((transfer.sentBytes / transfer.file.size) * 100))
         : 100;
-      const elapsedSeconds = Math.max(1, (Date.now() - transfer.startTime) / 1000);
       maybeUpdateTransferProgress(
         transfer,
         pct,
-        formatSize(Math.round(transfer.sentBytes / elapsedSeconds)) + "/s",
+        formatTransferSpeed(transfer, transfer.sentBytes),
         seq === transfer.totalChunks - 1
       );
     }
 
     transfer.fileHash = fileHasher.digest();
     await sendSecure(connection, { type: "file-done", id: transfer.id, totalChunks: transfer.totalChunks, fileHash: transfer.fileHash });
-    updateFileStatus(transfer.id, "等待接收端确认...", "");
+    updateFileStatus(transfer.id, "等待接收端校验...", "");
+  }
+
+  function readFileChunk(transfer, seq) {
+    const start = seq * transfer.chunkSize;
+    const end = Math.min(start + transfer.chunkSize, transfer.file.size);
+    return transfer.file.slice(start, end).arrayBuffer();
+  }
+
+  function prepareReceiverReadyWait(transfer) {
+    transfer.receiverReadyPromise = new Promise(function(resolve, reject) {
+      transfer.receiverReadyResolve = resolve;
+      transfer.receiverReadyReject = reject;
+    });
+  }
+
+  async function waitForReceiverReady(transfer) {
+    let timeoutId;
+    try {
+      await Promise.race([
+        transfer.receiverReadyPromise,
+        new Promise(function(_, reject) {
+          timeoutId = setTimeout(function() { reject(new Error("接收端存储准备超时")); }, DATA_CHANNEL_STALL_TIMEOUT_MS);
+        })
+      ]);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async function waitForAckWindow(connection, transfer, nextBytes) {
+    const deadline = Date.now() + DATA_CHANNEL_STALL_TIMEOUT_MS;
+    while (transfer.sentBytes - transfer.lastAckBytes + nextBytes > transfer.maxInFlightBytes) {
+      if (transfer.abortError) throw transfer.abortError;
+      if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
+      if (Date.now() >= deadline) throw new Error("receiver acknowledgement timeout");
+      await new Promise(function(resolve) {
+        let settled = false;
+        const finish = function() {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          transfer.ackWaiters.delete(finish);
+          resolve();
+        };
+        const timer = setTimeout(finish, Math.min(250, Math.max(1, deadline - Date.now())));
+        transfer.ackWaiters.add(finish);
+      });
+    }
   }
 
   function armCompletionProbe(connection, transfer) {
@@ -1295,20 +1548,21 @@
       : [];
 
     for (const seq of seqs) {
-      const start = seq * transfer.chunkSize;
-      const end = Math.min(start + transfer.chunkSize, transfer.file.size);
-      const arrayBuffer = await transfer.file.slice(start, end).arrayBuffer();
-      const hash = await createChunkHash(arrayBuffer, transfer.hashAlgorithm, transfer.legacy);
+      const arrayBuffer = await readFileChunk(transfer, seq);
+      const hash = transfer.aeadChunkIntegrity
+        ? null
+        : await createChunkHash(arrayBuffer, transfer.hashAlgorithm, transfer.legacy);
       await waitForDataChannel(connection);
-      await sendSecure(connection, {
+      const chunkMessage = {
         type: "file-chunk",
         id: transfer.id,
         seq: seq,
         totalChunks: transfer.totalChunks,
         chunkSize: transfer.chunkSize,
-        hash: hash,
         chunk: arrayBuffer
-      });
+      };
+      if (hash) chunkMessage.hash = hash;
+      await sendSecure(connection, chunkMessage);
     }
   }
 
@@ -1318,11 +1572,47 @@
     const dataChannel = connection.dataChannel || connection._dc;
     if (!dataChannel) return;
 
+    if (dataChannel.bufferedAmount <= BUFFER_HIGH_WATER_MARK) return;
     const deadline = Date.now() + DATA_CHANNEL_STALL_TIMEOUT_MS;
-    while (dataChannel.bufferedAmount > BUFFER_HIGH_WATER_MARK) {
-      if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
-      if (Date.now() >= deadline) throw new Error("data channel backpressure timeout");
-      await sleep(30);
+    if (typeof dataChannel.addEventListener !== "function") {
+      while (dataChannel.bufferedAmount > BUFFER_HIGH_WATER_MARK) {
+        if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
+        if (Date.now() >= deadline) throw new Error("data channel backpressure timeout");
+        await sleep(50);
+      }
+      return;
+    }
+
+    const previousThreshold = dataChannel.bufferedAmountLowThreshold;
+    dataChannel.bufferedAmountLowThreshold = BUFFER_HIGH_WATER_MARK;
+    try {
+      await new Promise(function(resolve, reject) {
+        let timer = null;
+        let pollTimer = null;
+        const cleanup = function() {
+          clearTimeout(timer);
+          clearInterval(pollTimer);
+          dataChannel.removeEventListener("bufferedamountlow", check);
+        };
+        const check = function() {
+          if (!isUsableConnection(connection)) {
+            cleanup();
+            reject(new Error("connection replaced or closed"));
+          } else if (dataChannel.bufferedAmount <= BUFFER_HIGH_WATER_MARK) {
+            cleanup();
+            resolve();
+          }
+        };
+        dataChannel.addEventListener("bufferedamountlow", check);
+        pollTimer = setInterval(check, 100);
+        timer = setTimeout(function() {
+          cleanup();
+          reject(new Error("data channel backpressure timeout"));
+        }, DATA_CHANNEL_STALL_TIMEOUT_MS);
+        check();
+      });
+    } finally {
+      dataChannel.bufferedAmountLowThreshold = previousThreshold;
     }
   }
 
@@ -1385,7 +1675,7 @@
     const item = document.querySelector('.file-message[data-id="' + cssEscape(id) + '"]');
     if (!item) return;
     item.querySelector(".file-progress-bar").style.width = pct + "%";
-    item.querySelector(".file-speed").textContent = speedText ? " 路 " + speedText : "";
+    item.querySelector(".file-speed").textContent = speedText ? " · " + speedText : "";
   }
 
   function updateFileStatus(id, text, cls) {
@@ -1400,6 +1690,8 @@
       progressBar.style.background = "#7bd88f";
     } else if (cls === "error") {
       progressBar.style.background = "#ff7d7d";
+    } else {
+      progressBar.style.background = "";
     }
 
     status.className = "file-status" + (cls ? " " + cls : "");
@@ -1423,6 +1715,160 @@
     if (!drawer || !statusBar) return;
     drawer.classList.toggle("collapsed", Boolean(collapsed));
     statusBar.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  }
+
+  async function createReceiveStore(transfer) {
+    await ensureReceiveCapacity(transfer.size);
+    let store;
+    if (transfer.size <= MEMORY_RECEIVE_LIMIT_BYTES) {
+      store = createMemoryReceiveStore(transfer);
+    } else {
+      try {
+        store = await createOpfsReceiveStore(transfer);
+      } catch (error) {
+        console.warn("[WO Mobile] OPFS unavailable, using IndexedDB:", error);
+        store = await createIndexedDbReceiveStore(transfer);
+      }
+    }
+    activeReceiveStores.add(store);
+    return store;
+  }
+
+  async function ensureReceiveCapacity(size) {
+    if (size <= MEMORY_RECEIVE_LIMIT_BYTES || !navigator.storage || typeof navigator.storage.estimate !== "function") return;
+    const estimate = await navigator.storage.estimate().catch(function() { return null; });
+    if (!estimate || !Number.isFinite(estimate.quota) || !Number.isFinite(estimate.usage)) return;
+    const reserve = Math.min(64 * 1024 * 1024, Math.max(8 * 1024 * 1024, Math.ceil(size * .02)));
+    if (estimate.quota - estimate.usage < size + reserve) {
+      throw new Error("存储空间不足，已拒绝接收文件");
+    }
+  }
+
+  function createMemoryReceiveStore(transfer) {
+    const chunks = new Map();
+    return {
+      kind: "memory",
+      async write(seq, arrayBuffer) { chunks.set(seq, new Blob([arrayBuffer])); },
+      async forEachChunk(callback) {
+        if (chunks.size !== transfer.totalChunks) throw new Error("内存分片数量与文件元数据不一致");
+        for (let seq = 0; seq < transfer.totalChunks; seq++) {
+          const part = chunks.get(seq);
+          if (!part) throw new Error("内存分片缺失");
+          await callback(await part.arrayBuffer());
+        }
+      },
+      async getDownloadBlob() {
+        const parts = [];
+        for (let seq = 0; seq < transfer.totalChunks; seq++) parts.push(chunks.get(seq));
+        return new Blob(parts);
+      },
+      async clear() { chunks.clear(); }
+    };
+  }
+
+  async function createIndexedDbReceiveStore(transfer) {
+    const db = await dbPromise;
+    if (!db) throw new Error("浏览器缺少可用的大文件存储能力");
+    await clearStoredChunks(Promise.resolve(db), transfer.id);
+    return {
+      kind: "indexeddb",
+      async write(seq, arrayBuffer) {
+        await storeChunk(Promise.resolve(db), transfer.id, seq, new Blob([arrayBuffer]));
+      },
+      async forEachChunk(callback) {
+        const parts = await loadStoredChunks(Promise.resolve(db), transfer.id);
+        if (parts.length !== transfer.totalChunks) throw new Error("IndexedDB 分片数量与文件元数据不一致");
+        for (const part of parts) await callback(await part.arrayBuffer());
+      },
+      async getDownloadBlob() {
+        const parts = await loadStoredChunks(Promise.resolve(db), transfer.id);
+        if (parts.length !== transfer.totalChunks) throw new Error("IndexedDB 分片缺失");
+        return new Blob(parts);
+      },
+      async clear() { await clearStoredChunks(Promise.resolve(db), transfer.id); }
+    };
+  }
+
+  async function createOpfsReceiveStore(transfer) {
+    if (!navigator.storage || typeof navigator.storage.getDirectory !== "function") {
+      throw new Error("OPFS is unavailable");
+    }
+    const root = await navigator.storage.getDirectory();
+    const entryName = ".web-omni-" + transfer.id.replace(/[^a-z0-9_-]/gi, "_") + ".part";
+    await root.removeEntry(entryName).catch(function() {});
+    const handle = await root.getFileHandle(entryName, { create: true });
+    let writable;
+    try {
+      writable = await handle.createWritable({ keepExistingData: false });
+    } catch (error) {
+      await root.removeEntry(entryName).catch(function() {});
+      throw error;
+    }
+    let writeQueue = Promise.resolve();
+    let closed = false;
+
+    async function finishWrites() {
+      await writeQueue;
+      if (!closed) {
+        closed = true;
+        await writable.close();
+      }
+      return handle.getFile();
+    }
+
+    return {
+      kind: "opfs",
+      async write(seq, arrayBuffer) {
+        if (closed) throw new Error("OPFS writer is closed");
+        writeQueue = writeQueue.then(function() {
+          return writable.write({ type: "write", position: seq * transfer.chunkSize, data: arrayBuffer });
+        });
+        await writeQueue;
+      },
+      async forEachChunk(callback) {
+        const file = await finishWrites();
+        if (file.size !== transfer.size) throw new Error("OPFS 文件大小与元数据不一致");
+        for (let offset = 0; offset < file.size || (file.size === 0 && offset === 0); offset += transfer.chunkSize) {
+          await callback(await file.slice(offset, Math.min(offset + transfer.chunkSize, file.size)).arrayBuffer());
+          if (file.size === 0) break;
+        }
+      },
+      async getDownloadBlob() { return finishWrites(); },
+      async clear() {
+        await writeQueue.catch(function() {});
+        if (!closed) {
+          closed = true;
+          await writable.abort().catch(function() {});
+        }
+        await root.removeEntry(entryName).catch(function() {});
+      }
+    };
+  }
+
+  async function disposeReceiveStore(store) {
+    if (!store) return;
+    clearTimeout(store.cleanupTimer);
+    activeReceiveStores.delete(store);
+    await store.clear();
+  }
+
+  function retainCompletedReceiveStore(store) {
+    clearTimeout(store.cleanupTimer);
+    store.cleanupTimer = setTimeout(function() {
+      disposeReceiveStore(store).catch(function() {});
+    }, COMPLETED_STORE_RETENTION_MS);
+  }
+
+  function readableStorageError(error) {
+    if (error && (error.name === "QuotaExceededError" || /quota|space|存储空间/i.test(String(error.message || "")))) {
+      return "存储空间不足，文件接收已停止";
+    }
+    return String(error && error.message || "无法准备文件存储");
+  }
+
+  function isReceiveStorageFailure(error) {
+    const text = String(error && (error.name + " " + error.message) || "");
+    return /QuotaExceeded|InvalidState|AbortError|OPFS|IndexedDB|storage|writer|存储/i.test(text);
   }
 
   function buildChunkKey(transferId, seq) {
@@ -1554,55 +2000,90 @@
     });
   }
 
-  async function finalizeIncomingTransfer(dbPromise, transfer, updateStatus) {
+  async function finalizeIncomingTransfer(transfer, updateStatus) {
     if (transfer.finalizePromise) return transfer.finalizePromise;
     transfer.finalizing = true;
     transfer.finalizePromise = (async function() {
       try {
-        const blobParts = await loadStoredChunks(dbPromise, transfer.id);
-        if (blobParts.length !== transfer.totalChunks) {
-          throw new Error("Stored chunk count does not match file metadata");
-        }
+        if (!transfer.receiveStore) throw new Error("接收存储不可用");
         if (transfer.expectedFileHash) {
-          updateStatus(transfer.id, "正在验证完整文件...", "");
+          updateStatus(transfer.id, "校验中", "");
           const hasher = createFileHasher(getHashAlgorithm(transfer.expectedFileHash), transfer.legacy);
-          for (const part of blobParts) {
-            hasher.update(await part.arrayBuffer());
-          }
+          await transfer.receiveStore.forEachChunk(function(arrayBuffer) { hasher.update(arrayBuffer); });
           const actualFileHash = hasher.digest();
           if (actualFileHash !== transfer.expectedFileHash) {
             transfer.integrityFailed = true;
             transfer.finalizing = false;
             transfer.finalizePromise = null;
-            await clearStoredChunks(dbPromise, transfer.id);
+            await disposeReceiveStore(transfer.receiveStore);
+            transfer.receiveStore = await createReceiveStore(transfer);
             updateStatus(transfer.id, "完整文件校验失败，正在重新接收...", "error");
             return false;
           }
         } else if (!transfer.legacy) {
           throw new Error("The complete SHA-256 digest is missing");
         }
-        const blob = new Blob(blobParts);
-        const url = URL.createObjectURL(blob);
-        activeObjectUrls.add(url);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = transfer.name;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(function() { releaseObjectUrl(url); }, 5000);
-        updateStatus(transfer.id, "已保存（" + ((Date.now() - transfer.startTime) / 1000).toFixed(1) + " 秒）", "done");
-        await clearStoredChunks(dbPromise, transfer.id);
+        updateStatus(transfer.id, "正在准备保存...", "");
+        const blob = await transfer.receiveStore.getDownloadBlob();
+        updateStatus(transfer.id, "完成（" + ((Date.now() - transfer.startTime) / 1000).toFixed(1) + " 秒）", "done");
+        addFileSaveButton(transfer.id, blob, transfer.name);
+        try {
+          offerFileDownload(transfer.id, blob, transfer.name, true);
+        } catch (error) {
+          console.warn("[WO Mobile] Automatic save requires user action:", error);
+        }
+        if (transfer.receiveStore.kind === "opfs") retainCompletedReceiveStore(transfer.receiveStore);
+        else await disposeReceiveStore(transfer.receiveStore);
+        transfer.receiveStore = null;
         return true;
       } catch (error) {
         console.error("[WO Mobile] Finalize failed:", error);
-        updateStatus(transfer.id, "保存失败", "error");
+        transfer.storageFailed = true;
+        transfer.storageError = readableStorageError(error);
+        await disposeReceiveStore(transfer.receiveStore).catch(function() {});
+        transfer.receiveStore = null;
+        updateStatus(transfer.id, "保存失败：" + transfer.storageError, "error");
         transfer.finalizing = false;
         transfer.finalizePromise = null;
         return false;
       }
     })();
     return transfer.finalizePromise;
+  }
+
+  function offerFileDownload(id, blob, name, automatic) {
+    const url = URL.createObjectURL(blob);
+    activeObjectUrls.add(url);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.hidden = true;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function() { releaseObjectUrl(url); }, automatic ? 5000 : 15000);
+  }
+
+  function addFileSaveButton(id, blob, name) {
+    const item = document.querySelector('.file-message[data-id="' + cssEscape(id) + '"]');
+    const status = item && item.querySelector(".file-status");
+    if (!status) return;
+    const previous = status.querySelector(".file-save");
+    if (previous) previous.remove();
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "file-save";
+    button.textContent = "保存文件";
+    button.addEventListener("click", function() {
+      try {
+        offerFileDownload(id, blob, name, false);
+        button.textContent = "已请求保存";
+      } catch (error) {
+        button.textContent = "保存失败，请重试";
+      }
+      setTimeout(function() { button.textContent = "再次保存"; }, 1600);
+    });
+    status.appendChild(button);
   }
 
   function normalizeArrayBuffer(value) {
@@ -1793,6 +2274,11 @@
       clearTimeout(queue.timer);
       queue.timer = null;
     });
+    activeReceiveStores.forEach(function(store) {
+      clearTimeout(store.cleanupTimer);
+      Promise.resolve(store.clear()).catch(function() {});
+    });
+    activeReceiveStores.clear();
     Array.from(activeObjectUrls).forEach(releaseObjectUrl);
     completedIncomingTransfers.clear();
     memoryChunkStore.clear();

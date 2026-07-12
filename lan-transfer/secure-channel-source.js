@@ -7,7 +7,13 @@ import { randomBytes } from "@noble/hashes/utils.js";
 
 const VERSION = 2;
 const HANDSHAKE_TIMEOUT_MS = 12000;
+const FEATURES_TIMEOUT_MS = 300;
 const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
+const FALLBACK_FEATURES = Object.freeze({
+  binaryEnvelope: false,
+  aeadChunkIntegrity: false,
+  receiverReady: false,
+});
 const DEFAULT_CAPABILITIES = Object.freeze({
   maxMessageBytes: 256 * 1024,
   chunkSize: 64 * 1024,
@@ -224,6 +230,31 @@ function aadFor(sessionId, direction, sequence, transferId) {
   return encoder.encode(JSON.stringify([VERSION, sessionId, direction, sequence, transferId]));
 }
 
+function featureOffer(supportsBinaryEnvelope) {
+  return Object.freeze({
+    binaryEnvelope: supportsBinaryEnvelope === true,
+    aeadChunkIntegrity: true,
+    receiverReady: true,
+  });
+}
+
+function normalizeFeatures(value) {
+  const source = value && typeof value === "object" ? value : {};
+  return Object.freeze({
+    binaryEnvelope: source.binaryEnvelope === true,
+    aeadChunkIntegrity: source.aeadChunkIntegrity === true,
+    receiverReady: source.receiverReady === true,
+  });
+}
+
+function negotiateFeatures(local, remote) {
+  return Object.freeze({
+    binaryEnvelope: local.binaryEnvelope && remote.binaryEnvelope,
+    aeadChunkIntegrity: local.aeadChunkIntegrity && remote.aeadChunkIntegrity,
+    receiverReady: local.receiverReady && remote.receiverReady,
+  });
+}
+
 function createSecureTransport(connection, config) {
   if (!connection || typeof connection.send !== "function") throw new TypeError("connection is required");
   const role = config && config.role === "mobile" ? "mobile" : "desktop";
@@ -243,6 +274,7 @@ function createSecureTransport(connection, config) {
     || toBase64(pairingSecret) !== String(config && config.pairingSecret || "")
   ) throw new Error("secure session parameters are invalid");
   const localCapabilities = normalizeCapabilities(config && config.capabilities);
+  const localFeatures = featureOffer(config && config.supportsBinaryEnvelope);
 
   const privateKey = x25519.utils.randomSecretKey();
   const publicKey = x25519.getPublicKey(privateKey);
@@ -259,11 +291,18 @@ function createSecureTransport(connection, config) {
   let desktopCapabilities = role === "desktop" ? localCapabilities : null;
   let mobileCapabilities = role === "mobile" ? localCapabilities : null;
   let negotiatedCapabilities = null;
+  let negotiatedFeatures = null;
+  let featuresStarted = false;
+  let featuresTimer = null;
   let resolveReady;
   let rejectReady;
+  let resolveFeatures;
   const readyPromise = new Promise((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
+  });
+  const featuresPromise = new Promise((resolve) => {
+    resolveFeatures = resolve;
   });
   const timeout = setTimeout(() => fail(new Error("secure handshake timed out")), HANDSHAKE_TIMEOUT_MS);
 
@@ -278,12 +317,37 @@ function createSecureTransport(connection, config) {
     ready = true;
     clearTimeout(timeout);
     resolveReady(api);
+    startFeatureNegotiation();
+  }
+
+  function finishFeatureNegotiation(features) {
+    if (negotiatedFeatures) return;
+    if (featuresTimer) clearTimeout(featuresTimer);
+    featuresTimer = null;
+    negotiatedFeatures = features;
+    resolveFeatures(features);
+  }
+
+  function startFeatureNegotiation() {
+    if (featuresStarted || closed) return;
+    featuresStarted = true;
+    featuresTimer = setTimeout(() => {
+      finishFeatureNegotiation(FALLBACK_FEATURES);
+    }, FEATURES_TIMEOUT_MS);
+    try {
+      sendEncrypted({ type: "wo-v2-features", ...localFeatures }, true);
+    } catch (error) {
+      fail(error);
+    }
   }
 
   function dispose(error, closeConnection) {
     if (closed) return;
     closed = true;
     clearTimeout(timeout);
+    if (featuresTimer) clearTimeout(featuresTimer);
+    featuresTimer = null;
+    finishFeatureNegotiation(FALLBACK_FEATURES);
     privateKey.fill(0);
     pairingSecret.fill(0);
     if (keys) {
@@ -375,19 +439,32 @@ function createSecureTransport(connection, config) {
   async function handle(message) {
     try {
       if (!ready) return { handshake: await handleHandshake(message), message: null };
-      if (!message || message.type !== "wo-v2-secure" || message.v !== VERSION) {
+      const isBase64Envelope = Boolean(message && message.type === "wo-v2-secure");
+      const isBinaryEnvelope = Boolean(message && message.type === "wo-v2-secure-bin");
+      if (!message || (!isBase64Envelope && !isBinaryEnvelope) || message.v !== VERSION) {
         throw new Error("unencrypted application message rejected");
+      }
+      if (isBinaryEnvelope && !(negotiatedFeatures && negotiatedFeatures.binaryEnvelope)) {
+        throw new Error("binary secure envelope was not negotiated");
       }
       const sequence = Number(message.sequence);
       if (!Number.isSafeInteger(sequence) || sequence <= receiveSequence || sequence > MAX_SEQUENCE) {
         throw new Error("encrypted message sequence is invalid");
       }
       const transferId = checkedEnvelopeTransferId(message.transferId);
-      const encodedCiphertext = String(message.ciphertext || "");
-      if (encodedCiphertext.length > Math.ceil((negotiatedCapabilities.maxMessageBytes + 16) * 4 / 3) + 4) {
-        throw new Error("encrypted message exceeds the negotiated size");
+      let ciphertext;
+      if (isBinaryEnvelope) {
+        if (!(message.ciphertext instanceof ArrayBuffer)) {
+          throw new Error("binary secure ciphertext is invalid");
+        }
+        ciphertext = new Uint8Array(message.ciphertext);
+      } else {
+        const encodedCiphertext = String(message.ciphertext || "");
+        if (encodedCiphertext.length > Math.ceil((negotiatedCapabilities.maxMessageBytes + 16) * 4 / 3) + 4) {
+          throw new Error("encrypted message exceeds the negotiated size");
+        }
+        ciphertext = fromBase64(encodedCiphertext);
       }
-      const ciphertext = fromBase64(encodedCiphertext);
       if (ciphertext.byteLength > negotiatedCapabilities.maxMessageBytes + 16) {
         throw new Error("encrypted message exceeds the negotiated size");
       }
@@ -403,6 +480,12 @@ function createSecureTransport(connection, config) {
         throw new Error("secure envelope transfer ID mismatch");
       }
       receiveSequence = sequence;
+      if (payload.type === "wo-v2-features") {
+        if (!negotiatedFeatures) {
+          finishFeatureNegotiation(negotiateFeatures(localFeatures, normalizeFeatures(payload)));
+        }
+        return { handshake: false, message: null };
+      }
       return { handshake: false, message: payload };
     } catch (error) {
       fail(error);
@@ -410,8 +493,7 @@ function createSecureTransport(connection, config) {
     }
   }
 
-  async function send(message) {
-    await readyPromise;
+  function sendEncrypted(message, forceBase64) {
     const transferId = transferIdForPayload(message);
     const plaintext = encodePayload(message);
     if (plaintext.byteLength > negotiatedCapabilities.maxMessageBytes) {
@@ -422,6 +504,20 @@ function createSecureTransport(connection, config) {
     const aad = aadFor(sessionId, sendDirection, sendSequence, transferId);
     const cipher = xchacha20poly1305(keys.sendKey, nonce, aad);
     const ciphertext = cipher.encrypt(plaintext);
+    if (!forceBase64 && negotiatedFeatures && negotiatedFeatures.binaryEnvelope) {
+      const ciphertextBuffer = ciphertext.buffer.slice(
+        ciphertext.byteOffset,
+        ciphertext.byteOffset + ciphertext.byteLength
+      );
+      rawSend({
+        type: "wo-v2-secure-bin",
+        v: VERSION,
+        sequence: sendSequence,
+        transferId,
+        ciphertext: ciphertextBuffer,
+      });
+      return;
+    }
     rawSend({
       type: "wo-v2-secure",
       v: VERSION,
@@ -431,10 +527,17 @@ function createSecureTransport(connection, config) {
     });
   }
 
+  async function send(message) {
+    await readyPromise;
+    await featuresPromise;
+    sendEncrypted(message, false);
+  }
+
   const api = {
     version: VERSION,
     role,
     ready: readyPromise,
+    featuresReady: featuresPromise,
     remoteNoncePrefix: null,
     handle,
     send,
@@ -444,6 +547,7 @@ function createSecureTransport(connection, config) {
     },
     get authenticated() { return ready; },
     get negotiatedCapabilities() { return negotiatedCapabilities; },
+    get negotiatedFeatures() { return negotiatedFeatures; },
   };
 
   if (role === "desktop") {

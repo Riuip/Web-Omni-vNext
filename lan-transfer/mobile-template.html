@@ -327,14 +327,15 @@
     .conversation-empty-copy { margin:0; color:var(--text-secondary); font-size:12px; line-height:1.55 }
 
     .conversation-item {
+      --message-enter-x:-6px;
       display:flex;
       align-items:flex-end;
       width:100%;
       min-width:0;
-      animation:message-enter 280ms var(--ease);
+      animation:message-enter 380ms var(--ease);
     }
-    .conversation-item.outgoing { justify-content:flex-end }
-    .conversation-item.system-note { justify-content:center }
+    .conversation-item.outgoing { --message-enter-x:6px; justify-content:flex-end }
+    .conversation-item.system-note { --message-enter-x:0px; justify-content:center }
     .text-bubble,.file-bubble,.system-bubble {
       color:var(--text);
       background:var(--raised);
@@ -342,6 +343,10 @@
       border-radius:var(--radius-lg);
       box-shadow:none;
     }
+    .conversation-item.incoming .text-bubble,
+    .conversation-item.incoming .file-bubble { border-top-left-radius:3px }
+    .conversation-item.outgoing .text-bubble,
+    .conversation-item.outgoing .file-bubble { border-top-right-radius:3px }
     .conversation-item.outgoing .text-bubble,
     .conversation-item.outgoing .file-bubble { color:#edf5ff; background:#243247; border-color:#36557c }
     .text-bubble { max-width:min(84%,440px); padding:10px 11px 8px }
@@ -367,7 +372,7 @@
     .conversation-item.outgoing .message-meta { color:#a9bad0 }
     .message-meta-actions { display:inline-flex; align-items:center; gap:7px }
     .chat-copy { padding:0; color:var(--blue); background:transparent; border:0; cursor:pointer; font-size:10px; font-weight:650 }
-    .text-status,.file-status { color:var(--text-muted) }
+    .text-status,.file-status { color:var(--text-muted); transition:color 380ms var(--ease) }
     .text-status.done,.file-status.done { color:var(--green) }
     .text-status.error,.file-status.error { color:var(--red) }
 
@@ -400,8 +405,21 @@
     .file-speed { color:#86bdff }
     .file-progress { height:4px; margin-top:8px; overflow:hidden; background:var(--hover); border-radius:2px }
     .conversation-item.outgoing .file-progress { background:#182334 }
-    .file-progress-bar { width:0; height:100%; background:var(--blue); border-radius:inherit; transition:width 220ms var(--ease) }
-    .file-status { grid-column:2; font-size:10px; line-height:1.4 }
+    .file-progress-bar { width:0; height:100%; background:var(--blue); border-radius:inherit; transition:width 320ms var(--ease),background-color 380ms var(--ease) }
+    .file-status { display:flex; grid-column:2; flex-wrap:wrap; align-items:center; gap:7px; font-size:10px; line-height:1.4 }
+    .file-save {
+      min-height:24px;
+      padding:3px 8px;
+      color:#dcecff;
+      background:#2c3d55;
+      border:1px solid #42658f;
+      border-radius:4px;
+      cursor:pointer;
+      font:inherit;
+      font-weight:650;
+      transition:background-color 180ms var(--ease),border-color 180ms var(--ease),color 180ms var(--ease);
+    }
+    .file-save:hover { background:#344a67; border-color:#5480b4 }
     .system-bubble { max-width:88%; padding:6px 9px; color:var(--text-secondary); background:var(--hover); font-size:10px; text-align:center }
 
     .composer-shell {
@@ -475,8 +493,8 @@
 
     @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
     @keyframes message-enter {
-      from { opacity:0; transform:translateY(4px); filter:blur(.6px) }
-      to { opacity:1; transform:translateY(0); filter:blur(0) }
+      from { opacity:0; transform:translateX(var(--message-enter-x)) scale(.994); filter:blur(.8px) }
+      to { opacity:1; transform:translateX(0) scale(1); filter:blur(0) }
     }
 
     @media (max-width:420px) {
@@ -510,6 +528,7 @@
         animation-iteration-count:1 !important;
         transition-duration:.01ms !important;
       }
+      .conversation-item { animation:none !important; filter:none !important; transform:none !important }
     }
   </style>
 </head>

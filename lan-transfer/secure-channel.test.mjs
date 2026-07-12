@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { createSecureTransport, createSession, createSha256 } from "./secure-channel-source.js";
+import {
+  createSecureTransport,
+  createSession,
+  createSha256,
+  fromBase64,
+  toBase64,
+} from "./secure-channel-source.js";
 
 {
   const digest = createSha256();
@@ -24,7 +30,7 @@ import { createSecureTransport, createSession, createSha256 } from "./secure-cha
   assert.equal(incremental.digestHex(), reference.digest("hex"), "100 MiB incremental SHA-256 mismatch");
 }
 
-async function connectedPair(desktopCapabilities, mobileCapabilities) {
+async function connectedPair(desktopCapabilities, mobileCapabilities, options = {}) {
   const session = createSession();
   let desktop;
   let mobile;
@@ -32,10 +38,16 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
   let mobileEnvelope = null;
   let deliverDesktop = true;
   let deliverMobile = true;
+  let desktopSecureCount = 0;
+  let mobileSecureCount = 0;
+  const desktopEnvelopes = [];
+  const mobileEnvelopes = [];
   const desktopConnection = {
     open: true,
     send(message) {
       desktopEnvelope = structuredClone(message);
+      desktopEnvelopes.push(desktopEnvelope);
+      if (message.type === "wo-v2-secure" && desktopSecureCount++ === 0 && options.dropFeatureOffers) return;
       if (deliverDesktop) queueMicrotask(() => mobile.handle(structuredClone(message)).catch(() => {}));
     },
     close() { this.open = false; },
@@ -44,13 +56,26 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
     open: true,
     send(message) {
       mobileEnvelope = structuredClone(message);
+      mobileEnvelopes.push(mobileEnvelope);
+      if (message.type === "wo-v2-secure" && mobileSecureCount++ === 0 && options.dropFeatureOffers) return;
       if (deliverMobile) queueMicrotask(() => desktop.handle(structuredClone(message)).catch(() => {}));
     },
     close() { this.open = false; },
   };
-  mobile = createSecureTransport(mobileConnection, { role: "mobile", ...session, capabilities: mobileCapabilities });
-  desktop = createSecureTransport(desktopConnection, { role: "desktop", ...session, capabilities: desktopCapabilities });
+  mobile = createSecureTransport(mobileConnection, {
+    role: "mobile",
+    ...session,
+    capabilities: mobileCapabilities,
+    supportsBinaryEnvelope: options.mobileSupportsBinary === true,
+  });
+  desktop = createSecureTransport(desktopConnection, {
+    role: "desktop",
+    ...session,
+    capabilities: desktopCapabilities,
+    supportsBinaryEnvelope: options.desktopSupportsBinary === true,
+  });
   await Promise.all([desktop.ready, mobile.ready]);
+  await Promise.all([desktop.featuresReady, mobile.featuresReady]);
   deliverDesktop = false;
   deliverMobile = false;
   return {
@@ -58,6 +83,8 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
     mobile,
     getDesktopEnvelope: () => desktopEnvelope,
     getMobileEnvelope: () => mobileEnvelope,
+    getDesktopEnvelopes: () => desktopEnvelopes,
+    getMobileEnvelopes: () => mobileEnvelopes,
   };
 }
 
@@ -98,12 +125,138 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
 }
 
 {
+  const pair = await connectedPair(undefined, undefined, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: true,
+  });
+  const expectedFeatures = {
+    binaryEnvelope: true,
+    aeadChunkIntegrity: true,
+    receiverReady: true,
+  };
+  assert.deepEqual(pair.desktop.negotiatedFeatures, expectedFeatures);
+  assert.deepEqual(pair.mobile.negotiatedFeatures, expectedFeatures);
+  assert.equal(
+    pair.getDesktopEnvelopes().find((message) => message.type === "wo-v2-secure")?.type,
+    "wo-v2-secure",
+    "feature offer must use the Base64 envelope"
+  );
+  await pair.desktop.send({
+    type: "file-chunk",
+    id: "binary-transfer",
+    seq: 0,
+    chunk: new Uint8Array([9, 8, 7]).buffer,
+  });
+  const envelope = pair.getDesktopEnvelope();
+  assert.equal(envelope.type, "wo-v2-secure-bin");
+  assert.ok(envelope.ciphertext instanceof ArrayBuffer);
+  const result = await pair.mobile.handle(envelope);
+  assert.deepEqual(Array.from(new Uint8Array(result.message.chunk)), [9, 8, 7]);
+}
+
+{
+  const chunkSize = 512 * 1024;
+  const totalBytes = 100 * 1024 * 1024;
+  const capabilities = {
+    maxMessageBytes: 2 * 1024 * 1024,
+    chunkSize,
+    hash: ["sha256"],
+    resume: true,
+  };
+  const pair = await connectedPair(capabilities, capabilities, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: true,
+  });
+  const sentDigest = createSha256();
+  const receivedDigest = createSha256();
+  const chunk = new Uint8Array(chunkSize);
+  let receivedBytes = 0;
+
+  for (let offset = 0, sequence = 0; offset < totalBytes; offset += chunkSize, sequence += 1) {
+    new DataView(chunk.buffer).setUint32(0, sequence, false);
+    sentDigest.update(chunk);
+    await pair.desktop.send({
+      type: "file-chunk",
+      id: "binary-100mib",
+      seq: sequence,
+      chunk: chunk.buffer,
+    });
+    const envelope = pair.getDesktopEnvelope();
+    assert.equal(envelope.type, "wo-v2-secure-bin");
+    const result = await pair.mobile.handle(envelope);
+    const receivedChunk = new Uint8Array(result.message.chunk);
+    receivedDigest.update(receivedChunk);
+    receivedBytes += receivedChunk.byteLength;
+  }
+
+  assert.equal(receivedBytes, totalBytes, "100 MiB binary transfer length mismatch");
+  assert.equal(receivedDigest.digestHex(), sentDigest.digestHex(), "100 MiB binary transfer digest mismatch");
+}
+
+{
+  const pair = await connectedPair(undefined, undefined, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: false,
+  });
+  assert.deepEqual(pair.desktop.negotiatedFeatures, {
+    binaryEnvelope: false,
+    aeadChunkIntegrity: true,
+    receiverReady: true,
+  });
+  await pair.desktop.send({ type: "text-message", text: "compatible" });
+  assert.equal(pair.getDesktopEnvelope().type, "wo-v2-secure");
+}
+
+{
+  const startedAt = Date.now();
+  const pair = await connectedPair(undefined, undefined, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: true,
+    dropFeatureOffers: true,
+  });
+  assert.ok(Date.now() - startedAt >= 250, "legacy feature fallback resolved too early");
+  assert.deepEqual(pair.desktop.negotiatedFeatures, {
+    binaryEnvelope: false,
+    aeadChunkIntegrity: false,
+    receiverReady: false,
+  });
+  assert.deepEqual(pair.mobile.negotiatedFeatures, pair.desktop.negotiatedFeatures);
+  await pair.desktop.send({ type: "text-message", text: "legacy" });
+  assert.equal(pair.getDesktopEnvelope().type, "wo-v2-secure");
+}
+
+{
   const pair = await connectedPair();
   await pair.desktop.send({ type: "file-meta", id: "transfer-a", size: 0, totalChunks: 1 });
   const envelope = structuredClone(pair.getDesktopEnvelope());
   assert.equal(envelope.transferId, "transfer-a");
   envelope.transferId = "transfer-b";
   await assert.rejects(() => pair.mobile.handle(envelope));
+}
+
+{
+  const pair = await connectedPair(undefined, undefined, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: true,
+  });
+  await pair.desktop.send({ type: "text-message", text: "binary-auth" });
+  const envelope = structuredClone(pair.getDesktopEnvelope());
+  const tampered = new Uint8Array(envelope.ciphertext.slice(0));
+  tampered[tampered.length - 1] ^= 1;
+  envelope.ciphertext = tampered.buffer;
+  await assert.rejects(() => pair.mobile.handle(envelope));
+}
+
+{
+  const pair = await connectedPair(undefined, undefined, {
+    desktopSupportsBinary: true,
+    mobileSupportsBinary: true,
+  });
+  await pair.desktop.send({ type: "text-message", text: "binary-replay" });
+  const envelope = pair.getDesktopEnvelope();
+  const first = await pair.mobile.handle(envelope);
+  assert.equal(first.message.text, "binary-replay");
+  await assert.rejects(() => pair.mobile.handle(envelope), /sequence/i);
 }
 
 {
@@ -119,8 +272,9 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
   const pair = await connectedPair();
   await pair.desktop.send({ type: "text-message", text: "auth" });
   const envelope = structuredClone(pair.getDesktopEnvelope());
-  const tail = envelope.ciphertext.slice(-1);
-  envelope.ciphertext = envelope.ciphertext.slice(0, -1) + (tail === "A" ? "B" : "A");
+  const tampered = fromBase64(envelope.ciphertext);
+  tampered[tampered.length - 1] ^= 1;
+  envelope.ciphertext = toBase64(tampered);
   await assert.rejects(() => pair.mobile.handle(envelope));
 }
 
@@ -146,4 +300,4 @@ async function connectedPair(desktopCapabilities, mobileCapabilities) {
   mobile.close(new Error("test complete"));
 }
 
-console.log("secure-channel v2: handshake, binary, replay, tamper and wrong-secret checks passed");
+console.log("secure-channel v2: handshake, feature fallback, binary, replay, tamper and wrong-secret checks passed");

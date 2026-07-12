@@ -640,6 +640,52 @@ button {
   line-height: 1.25;
 }
 
+.receive-folder-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+.receive-folder-btn {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--wo-text-secondary);
+  background: var(--wo-surface-hover);
+  border: 1px solid var(--wo-border);
+  border-radius: var(--wo-radius-md);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+  transition: color 180ms ease, background-color 180ms ease, border-color 180ms ease;
+}
+
+.receive-folder-btn:hover,
+.receive-folder-btn.active {
+  color: var(--wo-text);
+  background: var(--wo-surface-active);
+  border-color: var(--wo-border-strong);
+}
+
+.receive-folder-btn.active {
+  color: var(--wo-green);
+}
+
+.receive-folder-status {
+  max-width: min(30vw, 260px);
+  overflow: hidden;
+  color: var(--wo-text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 220ms ease;
+}
+
+.receive-folder-status[data-state="ready"] {
+  color: var(--wo-green);
+}
+
 .conversation-surface {
   min-height: 0;
   overflow: hidden;
@@ -712,18 +758,52 @@ button {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  animation: lan-message-enter 280ms cubic-bezier(.32, 0, .18, 1);
+  animation: lan-message-enter-incoming 380ms cubic-bezier(.32, 0, .18, 1);
 }
 
-@keyframes lan-message-enter {
+@keyframes lan-message-enter-incoming {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateX(-6px) scale(.994);
+    filter: blur(.8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+.conversation-item.outgoing {
+  animation-name: lan-message-enter-outgoing;
+}
+
+.conversation-item.system-note {
+  animation-name: lan-message-enter-system;
+}
+
+@keyframes lan-message-enter-outgoing {
+  from {
+    opacity: 0;
+    transform: translateX(6px) scale(.994);
+    filter: blur(.8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes lan-message-enter-system {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(.994);
     filter: blur(.6px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(0) scale(1);
     filter: blur(0);
   }
 }
@@ -788,7 +868,7 @@ button {
   color: var(--wo-text);
   background: var(--wo-surface-raised);
   border: 1px solid var(--wo-border);
-  border-radius: var(--wo-radius-lg);
+  border-radius: 3px 8px 8px 8px;
   box-shadow: none;
 }
 
@@ -797,6 +877,11 @@ button {
   color: #edf5ff;
   background: #243247;
   border-color: #36557c;
+  border-radius: 8px 3px 8px 8px;
+}
+
+.system-bubble {
+  border-radius: 8px;
 }
 
 .text-bubble {
@@ -945,7 +1030,7 @@ button {
   height: 100%;
   background: var(--wo-blue);
   border-radius: 3px;
-  transition: width 220ms cubic-bezier(.32, 0, .18, 1);
+  transition: width 320ms cubic-bezier(.32, 0, .18, 1), background-color 360ms cubic-bezier(.32, 0, .18, 1);
 }
 
 .file-status {
@@ -953,6 +1038,15 @@ button {
   color: var(--wo-text-muted);
   font-size: 11px;
   line-height: 1.45;
+  transition: color 360ms cubic-bezier(.32, 0, .18, 1);
+}
+
+.file-message.state-done .file-progress-bar {
+  background: var(--wo-green);
+}
+
+.file-message.state-error .file-progress-bar {
+  background: var(--wo-red);
 }
 
 .system-bubble {
@@ -1201,12 +1295,29 @@ button {
     padding: 14px 12px;
   }
 
+  .receive-folder-status {
+    display: none;
+  }
+
   .message-stack {
     max-width: calc(100% - 42px);
   }
 
   .composer-shell {
     padding: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-item {
+    animation: none;
+  }
+
+  .file-progress-bar,
+  .file-status,
+  .receive-folder-btn,
+  .receive-folder-status {
+    transition-duration: 0ms;
   }
 }
 
