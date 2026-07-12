@@ -90,6 +90,17 @@ function assertOrdered(source, patterns, label) {
   }
 }
 
+function findAwaitedFunctionContaining(source, callerBody, token) {
+  const awaitedNames = Array.from(callerBody.matchAll(/\bawait\s+([A-Za-z_$][\w$]*)\s*\(/g), (match) => match[1]);
+  for (const name of awaitedNames) {
+    try {
+      const body = functionSource(source, name);
+      if (body.includes(token)) return { name, body };
+    } catch (_) {}
+  }
+  assert.fail(`awaited download completion helper containing ${token} is missing`);
+}
+
 function assertAdaptiveProfile(source, chunkKiB, bufferMiB, ackMiB, label) {
   const profile = new RegExp(
     `chunkSize\\s*:\\s*${chunkKiB}\\s*\\*\\s*1024`
@@ -206,6 +217,7 @@ const nativeWeb = read("native-host/web/index.html");
 
 assert.ok(manifest.permissions.includes("nativeMessaging"), "LAN local mode requires nativeMessaging");
 assert.ok(manifest.permissions.includes("webRequest"), "media capture requires webRequest");
+assert.ok(manifest.permissions.includes("downloads"), "desktop receive cleanup requires the downloads API");
 assert.equal(manifest.permissions.includes("webRequestBlocking"), false, "blocking webRequest permission is forbidden");
 assert.equal(manifest.permissions.includes("debugger"), false, "debugger permission is forbidden");
 
@@ -281,6 +293,44 @@ assert.match(functionSource(transfer, "receiveChunk"), /isStorageWriteError[\s\S
 assert.match(functionSource(transfer, "cleanupRuntime"), /activeReceiveSinks[\s\S]+discard/, "desktop shutdown must discard unfinished receive sinks");
 assert.match(transferHtml, /id=["']chooseReceiveFolder["']/, "desktop toolbar needs a save-folder control");
 assert.match(transferHtml, /id=["']receiveFolderStatus["']/, "desktop toolbar needs folder permission status");
+
+const desktopDownload = functionSource(transfer, "downloadReceivedFile");
+assert.match(desktopDownload, /^async\s+function\s+downloadReceivedFile\b/, "desktop downloads must expose an awaitable lifecycle");
+const downloadStart = findAwaitedFunctionContaining(
+  transfer,
+  desktopDownload,
+  "chrome.downloads.download"
+);
+const downloadCompletion = findAwaitedFunctionContaining(
+  transfer,
+  desktopDownload,
+  "chrome.downloads.onChanged.addListener"
+);
+assert.match(downloadStart.body, /chrome\.downloads\.download\s*\(/, "desktop receives must use the downloads API");
+assert.match(downloadCompletion.body, /state\s*===\s*["']complete["']/, "download cleanup must wait for the completed state");
+assert.match(downloadCompletion.body, /\.error\b/, "download completion must handle terminal errors");
+assert.match(downloadCompletion.body, /chrome\.downloads\.onChanged\.removeListener/, "download completion listeners must be removed");
+assertOrdered(desktopDownload, [
+  new RegExp(`await\\s+${downloadStart.name}\\s*\\(`),
+  new RegExp(`await\\s+${downloadCompletion.name}\\s*\\(`),
+  /releaseObjectUrl\s*\(/,
+  /releaseCallback/,
+], "desktop download cleanup lifecycle");
+assert.match(desktopDownload, /await[\s\S]{0,100}releaseCallback\s*\(/, "temporary-file cleanup must be awaited");
+
+const fileSystemSink = functionSource(transfer, "createFileSystemReceiveSink");
+const opfsCleanupViaCallback = /(?:await|return)\s+downloadReceivedFile\s*\([^;]{0,220}removeFile/.test(fileSystemSink);
+const opfsCleanupSequential = /await\s+downloadReceivedFile\s*\([^;]+;[\s\S]{0,160}await\s+removeFile\s*\(/.test(fileSystemSink);
+assert.ok(opfsCleanupViaCallback || opfsCleanupSequential, "OPFS temporary files must be removed only after download completion");
+
+const desktopFileStatus = functionSource(transfer, "updateFileStatus");
+const speedQuery = /const\s+([A-Za-z_$][\w$]*)\s*=\s*item\.querySelector\(\s*["']\.file-speed["']\s*\)/.exec(desktopFileStatus);
+assert.ok(speedQuery, "desktop file status must access the speed label");
+assert.match(
+  desktopFileStatus,
+  new RegExp(`(?:cls\\s*===\\s*["']done["'][\\s\\S]{0,100}cls\\s*===\\s*["']error["']|cls\\s*===\\s*["']error["'][\\s\\S]{0,100}cls\\s*===\\s*["']done["'])[\\s\\S]{0,260}${speedQuery[1]}\\.textContent\\s*=\\s*["']["']`),
+  "desktop done and error states must clear stale transfer speed"
+);
 
 assert.match(mobile, /SIGNAL_SERVERS\[normalizedAttempt\s*%\s*SIGNAL_SERVERS\.length\]/, "mobile signaling must rotate configured servers");
 assert.match(mobile, /params\.get\(["']s["']\)\s*\|\|\s*params\.get\(["']session["']\)/, "mobile launch parser must support v2 and compatibility session keys");

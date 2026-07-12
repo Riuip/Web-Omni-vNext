@@ -34,6 +34,9 @@
   const MAX_SEND_ATTEMPTS = 3;
   const FILE_COMPLETE_RETRY_MS = 2000;
   const FILE_COMPLETE_MAX_ATTEMPTS = 30;
+  const DOWNLOAD_COMPLETION_TIMEOUT_MS = 30 * 60 * 1000;
+  const DOWNLOAD_FALLBACK_RETENTION_MS = 5 * 60 * 1000;
+  const DOWNLOAD_RETRY_DELAY_MS = 300;
   const MISSING_CHUNK_RETRY_MS = 1200;
   const MISSING_CHUNK_MAX_ATTEMPTS = 10;
   const COMPLETED_TRANSFER_CACHE_MS = 60000;
@@ -2407,6 +2410,11 @@
       item.classList.add("state-error");
     }
 
+    if (cls === "done" || cls === "error") {
+      const speed = item.querySelector(".file-speed");
+      if (speed) speed.textContent = "";
+    }
+
     status.className = "file-status" + (cls ? " " + cls : "");
     status.textContent = text;
   }
@@ -3332,7 +3340,7 @@
         );
       },
       async commit(file) {
-        downloadReceivedFile(file, transfer.name);
+        await downloadReceivedFile(file, transfer.name);
         parts.clear();
         discarded = true;
       },
@@ -3360,7 +3368,7 @@
         return new File(parts, transfer.name, { type: "application/octet-stream", lastModified: Date.now() });
       },
       async commit(file) {
-        downloadReceivedFile(file, transfer.name);
+        await downloadReceivedFile(file, transfer.name);
         await clearStoredChunks(dbPromise, transfer.id);
       },
       async discard() {
@@ -3444,8 +3452,7 @@
         await finishWrites();
         committed = true;
         if (options.autoDownload) {
-          downloadReceivedFile(file, options.transfer.name);
-          await removeFile();
+          await downloadReceivedFile(file, options.transfer.name, removeFile);
         }
       },
       async discard() {
@@ -3490,19 +3497,166 @@
     }
   }
 
-  function downloadReceivedFile(file, name, releaseCallback) {
+  async function downloadReceivedFile(file, name, releaseCallback) {
     const url = URL.createObjectURL(file);
     activeObjectUrls.add(url);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => {
+    const downloadsApi = typeof chrome !== "undefined" && chrome.downloads;
+    const canTrackDownload = Boolean(
+      downloadsApi
+      && typeof downloadsApi.download === "function"
+      && downloadsApi.onChanged
+      && typeof downloadsApi.onChanged.addListener === "function"
+    );
+
+    if (!canTrackDownload) {
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => {
+        releaseObjectUrl(url);
+        if (typeof releaseCallback === "function") Promise.resolve(releaseCallback()).catch(() => {});
+      }, DOWNLOAD_FALLBACK_RETENTION_MS);
+      return;
+    }
+
+    try {
+      let lastError = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const downloadId = await beginChromeDownload(url, name);
+          await waitForChromeDownload(downloadId);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt > 0 || !isRetryableDownloadError(error)) throw error;
+          await new Promise((resolve) => setTimeout(resolve, DOWNLOAD_RETRY_DELAY_MS));
+        }
+      }
+      throw lastError || createDownloadError("DOWNLOAD_FAILED", "Browser download failed");
+    } finally {
       releaseObjectUrl(url);
-      if (typeof releaseCallback === "function") Promise.resolve(releaseCallback()).catch(() => {});
-    }, 60000);
+      if (typeof releaseCallback === "function") await releaseCallback();
+    }
+  }
+
+  function beginChromeDownload(url, name) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (downloadId, error) => {
+        if (settled) return;
+        settled = true;
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (!Number.isInteger(downloadId)) {
+          reject(createDownloadError("DOWNLOAD_START_FAILED", "Browser did not return a download ID"));
+          return;
+        }
+        resolve(downloadId);
+      };
+
+      try {
+        const result = chrome.downloads.download({
+          url,
+          filename: name,
+          saveAs: false,
+          conflictAction: "uniquify",
+        }, (downloadId) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          finish(
+            downloadId,
+            runtimeError
+              ? createDownloadError("DOWNLOAD_START_FAILED", runtimeError.message || "Browser download failed to start")
+              : null
+          );
+        });
+        if (result && typeof result.then === "function") {
+          result.then(
+            (downloadId) => finish(downloadId, null),
+            (error) => finish(null, createDownloadError("DOWNLOAD_START_FAILED", error && error.message))
+          );
+        }
+      } catch (error) {
+        finish(null, createDownloadError("DOWNLOAD_START_FAILED", error && error.message));
+      }
+    });
+  }
+
+  function waitForChromeDownload(downloadId) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timeout = null;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        try { chrome.downloads.onChanged.removeListener(onChanged); } catch (_) {}
+        if (error) reject(error);
+        else resolve();
+      };
+      const inspectState = (state, errorCode) => {
+        if (state === "complete") {
+          finish(null);
+        } else if (state === "interrupted" || errorCode) {
+          finish(createDownloadError(errorCode || "DOWNLOAD_INTERRUPTED", "Browser interrupted the file download"));
+        }
+      };
+      const onChanged = (delta) => {
+        if (!delta || delta.id !== downloadId) return;
+        inspectState(
+          delta.state && delta.state.current,
+          delta.error && delta.error.current
+        );
+      };
+      timeout = setTimeout(() => {
+        finish(createDownloadError("DOWNLOAD_TIMEOUT", "Timed out while waiting for the browser to save the file"));
+      }, DOWNLOAD_COMPLETION_TIMEOUT_MS);
+
+      chrome.downloads.onChanged.addListener(onChanged);
+      inspectChromeDownload(downloadId).then((item) => {
+        if (item) inspectState(item.state, item.error);
+      }).catch(() => {});
+    });
+  }
+
+  function inspectChromeDownload(downloadId) {
+    if (!chrome.downloads || typeof chrome.downloads.search !== "function") return Promise.resolve(null);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (items, error) => {
+        if (settled) return;
+        settled = true;
+        if (error) reject(error);
+        else resolve(Array.isArray(items) ? items[0] || null : null);
+      };
+      try {
+        const result = chrome.downloads.search({ id: downloadId }, (items) => {
+          const runtimeError = chrome.runtime && chrome.runtime.lastError;
+          finish(items, runtimeError ? new Error(runtimeError.message || "Download lookup failed") : null);
+        });
+        if (result && typeof result.then === "function") {
+          result.then((items) => finish(items, null), (error) => finish(null, error));
+        }
+      } catch (error) {
+        finish(null, error);
+      }
+    });
+  }
+
+  function createDownloadError(code, message) {
+    const error = new Error(message || code || "Browser download failed");
+    error.woDownloadError = true;
+    error.downloadError = String(code || "DOWNLOAD_FAILED");
+    return error;
+  }
+
+  function isRetryableDownloadError(error) {
+    return Boolean(error && ["NETWORK_FAILED", "FILE_FAILED", "FILE_TRANSIENT_ERROR"]
+      .includes(String(error.downloadError || "").toUpperCase()));
   }
 
   async function discardReceiveSink(transfer) {
@@ -3544,6 +3698,12 @@
   }
 
   function readableStorageError(error) {
+    if (error && error.woDownloadError) {
+      const code = String(error.downloadError || "DOWNLOAD_FAILED");
+      if (code === "USER_CANCELED") return "文件保存已取消。";
+      if (code === "DOWNLOAD_TIMEOUT") return "等待浏览器保存文件超时，请检查下载列表。";
+      return "浏览器保存文件失败（" + code + "），请检查下载设置后重试。";
+    }
     if (error && error.name === "QuotaExceededError") return "存储空间不足，文件接收已停止。";
     if (error && (error.name === "NotAllowedError" || error.name === "SecurityError")) {
       return "保存文件夹权限已失效，请重新授权。";
@@ -3596,6 +3756,8 @@
         } else if (!transfer.legacy) {
           throw new Error("The complete SHA-256 digest is missing");
         }
+        updateStatus(transfer.id, "校验通过，正在保存文件...", "");
+        updateFileProgress(transfer.id, 100, "保存中");
         await transfer.sink.commit(file);
 
         updateStatus(
