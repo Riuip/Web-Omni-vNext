@@ -239,20 +239,181 @@
   }
 
   function guessExtensionFromMime(type) {
-    var mime = String(type || "").toLowerCase();
-    if (!mime) return ".bin";
-    if (mime === "image/jpeg") return ".jpg";
-    if (mime === "image/png") return ".png";
-    if (mime === "image/gif") return ".gif";
-    if (mime === "image/webp") return ".webp";
-    if (mime === "image/bmp") return ".bmp";
-    if (mime === "image/svg+xml") return ".svg";
-    if (mime === "text/plain") return ".txt";
-    if (mime === "text/html") return ".html";
-    if (mime === "application/pdf") return ".pdf";
-    var slashIndex = mime.indexOf("/");
-    if (slashIndex === -1 || slashIndex === mime.length - 1) return ".bin";
-    return "." + mime.slice(slashIndex + 1).replace(/[^a-z0-9.+-]/g, "");
+    return preferredExtensionForMime(normalizeFileMimeType(type, "")) || ".bin";
+  }
+
+  function normalizeFileMimeType(value, fileName) {
+    const rawValue = String(value || "").split(";", 1)[0].trim().toLowerCase();
+    const raw = rawValue.length <= 255 ? rawValue : "";
+    const valid = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(raw);
+    const inferred = inferMimeTypeFromFileName(fileName);
+    if (!valid || raw === "application/octet-stream" || raw === "binary/octet-stream" || raw === "application/download") {
+      return inferred || "application/octet-stream";
+    }
+    return raw;
+  }
+
+  function inferMimeTypeFromFileName(fileName) {
+    const safeName = String(fileName || "").toLowerCase();
+    const dot = safeName.lastIndexOf(".");
+    const extension = dot >= 0 ? safeName.slice(dot) : "";
+    switch (extension) {
+      case ".mp4": return "video/mp4";
+      case ".mov": return "video/quicktime";
+      case ".m4v": return "video/x-m4v";
+      case ".webm": return "video/webm";
+      case ".mkv": return "video/x-matroska";
+      case ".avi": return "video/x-msvideo";
+      case ".wmv": return "video/x-ms-wmv";
+      case ".flv": return "video/x-flv";
+      case ".3gp": return "video/3gpp";
+      case ".mpeg":
+      case ".mpg": return "video/mpeg";
+      case ".mp3": return "audio/mpeg";
+      case ".m4a": return "audio/mp4";
+      case ".aac": return "audio/aac";
+      case ".wav": return "audio/wav";
+      case ".flac": return "audio/flac";
+      case ".ogg": return "audio/ogg";
+      case ".jpg":
+      case ".jpeg": return "image/jpeg";
+      case ".png": return "image/png";
+      case ".gif": return "image/gif";
+      case ".webp": return "image/webp";
+      case ".avif": return "image/avif";
+      case ".heic": return "image/heic";
+      case ".bmp": return "image/bmp";
+      case ".svg": return "image/svg+xml";
+      case ".pdf": return "application/pdf";
+      case ".txt": return "text/plain";
+      case ".html":
+      case ".htm": return "text/html";
+      case ".json": return "application/json";
+      case ".zip": return "application/zip";
+      case ".7z": return "application/x-7z-compressed";
+      case ".rar": return "application/vnd.rar";
+      case ".doc": return "application/msword";
+      case ".docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      case ".xls": return "application/vnd.ms-excel";
+      case ".xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      case ".ppt": return "application/vnd.ms-powerpoint";
+      case ".pptx": return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+      default: return "";
+    }
+  }
+
+  function preferredExtensionForMime(mimeType) {
+    switch (String(mimeType || "").toLowerCase()) {
+      case "video/mp4": return ".mp4";
+      case "video/quicktime": return ".mov";
+      case "video/x-m4v": return ".m4v";
+      case "video/webm": return ".webm";
+      case "video/x-matroska": return ".mkv";
+      case "video/x-msvideo": return ".avi";
+      case "video/x-ms-wmv": return ".wmv";
+      case "video/x-flv": return ".flv";
+      case "video/3gpp": return ".3gp";
+      case "video/mpeg": return ".mpg";
+      case "audio/mpeg": return ".mp3";
+      case "audio/mp4": return ".m4a";
+      case "audio/aac": return ".aac";
+      case "audio/wav":
+      case "audio/x-wav": return ".wav";
+      case "audio/flac": return ".flac";
+      case "audio/ogg": return ".ogg";
+      case "image/jpeg": return ".jpg";
+      case "image/png": return ".png";
+      case "image/gif": return ".gif";
+      case "image/webp": return ".webp";
+      case "image/avif": return ".avif";
+      case "image/heic": return ".heic";
+      case "image/bmp": return ".bmp";
+      case "image/svg+xml": return ".svg";
+      case "application/pdf": return ".pdf";
+      case "text/plain": return ".txt";
+      case "text/html": return ".html";
+      case "application/json": return ".json";
+      case "application/zip": return ".zip";
+      case "application/x-7z-compressed": return ".7z";
+      case "application/vnd.rar": return ".rar";
+      case "application/msword": return ".doc";
+      case "application/vnd.openxmlformats-officedocument.wordprocessingml.document": return ".docx";
+      case "application/vnd.ms-excel": return ".xls";
+      case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": return ".xlsx";
+      case "application/vnd.ms-powerpoint": return ".ppt";
+      case "application/vnd.openxmlformats-officedocument.presentationml.presentation": return ".pptx";
+      default: return "";
+    }
+  }
+
+  function repairFileName(name, mimeType) {
+    let safeName = sanitizeFileName(name || "download").replace(/[. ]+$/, "");
+    if (!safeName) safeName = "download";
+    const desiredExtension = preferredExtensionForMime(mimeType);
+    if (!desiredExtension) return safeName;
+    const dot = safeName.lastIndexOf(".");
+    const currentExtension = dot > 0 ? safeName.slice(dot).toLowerCase() : "";
+    if (!currentExtension) return safeName + desiredExtension;
+    if ([".txt", ".text", ".bin", ".blob", ".dat", ".tmp", ".part", ".download", ".file"].includes(currentExtension)) {
+      return safeName.slice(0, dot) + desiredExtension;
+    }
+    return safeName;
+  }
+
+  async function resolveOutgoingFileMetadata(file) {
+    let mimeType = normalizeFileMimeType(file && file.type, file && file.name);
+    if (!/^(?:video|audio|image)\//.test(mimeType)) {
+      const detectedMime = await sniffMediaMimeType(file);
+      if (detectedMime) mimeType = detectedMime;
+    }
+    return {
+      name: repairFileName(file && file.name || "upload", mimeType),
+      mimeType: mimeType
+    };
+  }
+
+  async function sniffMediaMimeType(file) {
+    if (!file || typeof file.slice !== "function" || !Number.isFinite(file.size) || file.size <= 0) return "";
+    let bytes;
+    try {
+      bytes = new Uint8Array(await file.slice(0, Math.min(file.size, 4096)).arrayBuffer());
+    } catch (error) {
+      return "";
+    }
+    if (bytes.length >= 12 && readAscii(bytes, 4, 4) === "ftyp") {
+      const brand = readAscii(bytes, 8, 4).toLowerCase();
+      if (brand.startsWith("qt")) return "video/quicktime";
+      if (brand.startsWith("3g2")) return "video/3gpp2";
+      if (brand.startsWith("3gp")) return "video/3gpp";
+      if (["m4a ", "m4b ", "m4p "].includes(brand)) return "audio/mp4";
+      if (["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand)) return "image/heic";
+      if (["avif", "avis"].includes(brand)) return "image/avif";
+      return "video/mp4";
+    }
+    if (bytes.length >= 12 && readAscii(bytes, 0, 4) === "RIFF") {
+      const format = readAscii(bytes, 8, 4);
+      if (format === "AVI ") return "video/x-msvideo";
+      if (format === "WAVE") return "audio/wav";
+      if (format === "WEBP") return "image/webp";
+    }
+    if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+      return readAscii(bytes, 0, bytes.length).toLowerCase().includes("webm") ? "video/webm" : "video/x-matroska";
+    }
+    if (bytes.length >= 3 && readAscii(bytes, 0, 3) === "FLV") return "video/x-flv";
+    if (bytes.length >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1 && (bytes[3] === 0xba || bytes[3] === 0xb3)) {
+      return "video/mpeg";
+    }
+    if (bytes.length > 376 && bytes[0] === 0x47 && bytes[188] === 0x47 && bytes[376] === 0x47) return "video/mp2t";
+    if (bytes.length >= 8 && bytes[0] === 0x89 && readAscii(bytes, 1, 3) === "PNG") return "image/png";
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    return "";
+  }
+
+  function readAscii(bytes, offset, length) {
+    let result = "";
+    const end = Math.min(bytes.length, offset + length);
+    for (let index = offset; index < end; index++) result += String.fromCharCode(bytes[index]);
+    return result;
   }
 
   function buildTimestampToken() {
@@ -963,6 +1124,8 @@
     const chunkSize = Number(meta.chunkSize || activeChunkSize);
     const expectedChunks = Math.ceil(size / chunkSize) || 1;
     const legacy = Boolean(secureTransport && secureTransport.legacy);
+    const mimeType = normalizeFileMimeType(meta.mimeType || meta.contentType, meta.name);
+    const fileName = repairFileName(meta.name || "download", mimeType);
     let hashAlgorithm;
     try {
       hashAlgorithm = pickHashAlgorithm(meta.hashAlgorithm || (legacy ? "fnv1a32" : DEFAULT_HASH_ALGORITHM), legacy);
@@ -981,7 +1144,8 @@
     const existing = incomingTransfers.get(transferId);
     if (existing) {
       if (existing.size === size && existing.totalChunks === totalChunks && existing.chunkSize === chunkSize
-        && existing.legacy === legacy && existing.hashAlgorithm === hashAlgorithm) {
+        && existing.legacy === legacy && existing.hashAlgorithm === hashAlgorithm
+        && existing.mimeType === mimeType && existing.name === fileName) {
         existing.missingRetryAttempts = 0;
         if (features.receiverReady && existing.storageReady) {
           safeSend(connection, {
@@ -1001,7 +1165,8 @@
 
     const transfer = {
       id: transferId,
-      name: sanitizeFileName(meta.name || "download.bin"),
+      name: fileName,
+      mimeType: mimeType,
       size: size,
       totalChunks: totalChunks,
       chunkSize: chunkSize,
@@ -1339,9 +1504,13 @@
     }
 
     files.forEach(function(file) {
+      const mimeType = normalizeFileMimeType(file.type, file.name);
+      const fileName = repairFileName(file.name || "upload", mimeType);
       const transfer = {
         id: "send-" + randomId(),
         file: file,
+        name: fileName,
+        mimeType: mimeType,
         totalChunks: Math.ceil(file.size / activeChunkSize) || 1,
         chunkSize: activeChunkSize,
         startTime: 0,
@@ -1365,11 +1534,12 @@
         cleanupTimer: null,
         fileHash: null,
         hashAlgorithm: null,
+        metadataResolved: false,
         speedSamples: []
       };
       outgoingTransfers.set(transfer.id, transfer);
       sendQueue.push(transfer);
-      addFileItem(transfer.id, file.name, file.size, "send", "等待发送");
+      addFileItem(transfer.id, transfer.name, file.size, "send", "等待发送");
     });
 
     runSendQueue();
@@ -1422,6 +1592,14 @@
   async function sendTransfer(connection, transfer) {
     if (!isUsableConnection(connection)) throw new Error("connection unavailable");
 
+    if (!transfer.metadataResolved) {
+      const metadata = await resolveOutgoingFileMetadata(transfer.file);
+      transfer.name = metadata.name;
+      transfer.mimeType = metadata.mimeType;
+      transfer.metadataResolved = true;
+      updateFileName(transfer.id, transfer.name);
+    }
+
     const transport = secureTransport;
     const features = await waitForTransportFeatures(transport);
     if (secureTransport !== transport || !isUsableConnection(connection)) throw new Error("connection capabilities changed");
@@ -1448,7 +1626,8 @@
     await sendSecure(connection, {
       type: "file-meta",
       id: transfer.id,
-      name: transfer.file.name,
+      name: transfer.name,
+      mimeType: transfer.mimeType,
       size: transfer.file.size,
       totalChunks: transfer.totalChunks,
       chunkSize: transfer.chunkSize,
@@ -1593,7 +1772,7 @@
         updateFileStatus(transfer.id, "连接能力已变化，正在重新发送...", "");
         return;
       }
-      safeSend(connection, { type: "file-meta", id: transfer.id, name: transfer.file.name, size: transfer.file.size, totalChunks: transfer.totalChunks, chunkSize: transfer.chunkSize, lastModified: transfer.file.lastModified || Date.now(), hashAlgorithm: transfer.hashAlgorithm });
+      safeSend(connection, { type: "file-meta", id: transfer.id, name: transfer.name, mimeType: transfer.mimeType, size: transfer.file.size, totalChunks: transfer.totalChunks, chunkSize: transfer.chunkSize, lastModified: transfer.file.lastModified || Date.now(), hashAlgorithm: transfer.hashAlgorithm });
       safeSend(connection, { type: "file-done", id: transfer.id, totalChunks: transfer.totalChunks, fileHash: transfer.fileHash });
       armCompletionProbe(connection, transfer);
     });
@@ -1749,6 +1928,12 @@
     item.querySelector(".file-speed").textContent = speedText ? " · " + speedText : "";
   }
 
+  function updateFileName(id, name) {
+    const item = document.querySelector('.file-message[data-id="' + cssEscape(id) + '"]');
+    const nameElement = item && item.querySelector(".file-name");
+    if (nameElement) nameElement.textContent = name;
+  }
+
   function updateFileStatus(id, text, cls) {
     const item = document.querySelector('.file-message[data-id="' + cssEscape(id) + '"]');
     if (!item) return;
@@ -1819,7 +2004,7 @@
     const chunks = new Map();
     return {
       kind: "memory",
-      async write(seq, arrayBuffer) { chunks.set(seq, new Blob([arrayBuffer])); },
+      async write(seq, arrayBuffer) { chunks.set(seq, new Blob([arrayBuffer], { type: transfer.mimeType })); },
       async forEachChunk(callback) {
         if (chunks.size !== transfer.totalChunks) throw new Error("内存分片数量与文件元数据不一致");
         for (let seq = 0; seq < transfer.totalChunks; seq++) {
@@ -1831,7 +2016,7 @@
       async getDownloadBlob() {
         const parts = [];
         for (let seq = 0; seq < transfer.totalChunks; seq++) parts.push(chunks.get(seq));
-        return new Blob(parts);
+        return new Blob(parts, { type: transfer.mimeType });
       },
       async clear() { chunks.clear(); }
     };
@@ -1844,7 +2029,7 @@
     return {
       kind: "indexeddb",
       async write(seq, arrayBuffer) {
-        await storeChunk(Promise.resolve(db), transfer.id, seq, new Blob([arrayBuffer]));
+        await storeChunk(Promise.resolve(db), transfer.id, seq, new Blob([arrayBuffer], { type: transfer.mimeType }));
       },
       async forEachChunk(callback) {
         const parts = await loadStoredChunks(Promise.resolve(db), transfer.id);
@@ -1854,7 +2039,7 @@
       async getDownloadBlob() {
         const parts = await loadStoredChunks(Promise.resolve(db), transfer.id);
         if (parts.length !== transfer.totalChunks) throw new Error("IndexedDB 分片缺失");
-        return new Blob(parts);
+        return new Blob(parts, { type: transfer.mimeType });
       },
       async clear() { await clearStoredChunks(Promise.resolve(db), transfer.id); }
     };
@@ -1904,7 +2089,10 @@
           if (file.size === 0) break;
         }
       },
-      async getDownloadBlob() { return finishWrites(); },
+      async getDownloadBlob() {
+        const file = await finishWrites();
+        return new Blob([file], { type: transfer.mimeType });
+      },
       async clear() {
         await writeQueue.catch(function() {});
         if (!closed) {

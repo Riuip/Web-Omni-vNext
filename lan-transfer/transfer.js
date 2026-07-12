@@ -303,9 +303,120 @@
     if (mime === "text/plain") return ".txt";
     if (mime === "text/html") return ".html";
     if (mime === "application/pdf") return ".pdf";
+    if (mime === "video/mp4") return ".mp4";
+    if (mime === "video/quicktime") return ".mov";
+    if (mime === "video/webm") return ".webm";
+    if (mime === "video/x-matroska") return ".mkv";
+    if (mime === "video/x-msvideo") return ".avi";
+    if (mime === "video/x-flv") return ".flv";
+    if (mime === "video/mp2t") return ".ts";
+    if (mime === "video/mpeg") return ".mpeg";
+    if (mime === "video/3gpp") return ".3gp";
+    if (mime === "video/3gpp2") return ".3g2";
+    if (mime === "audio/mp4") return ".m4a";
+    if (mime === "audio/mpeg") return ".mp3";
+    if (mime === "audio/wav" || mime === "audio/x-wav") return ".wav";
+    if (mime === "audio/ogg") return ".ogg";
+    if (mime === "image/heic" || mime === "image/heif") return ".heic";
+    if (mime === "image/avif") return ".avif";
     const slashIndex = mime.indexOf("/");
     if (slashIndex === -1 || slashIndex === mime.length - 1) return ".bin";
     return "." + mime.slice(slashIndex + 1).replace(/[^a-z0-9.+-]/g, "");
+  }
+
+  function normalizeTransferMimeType(type) {
+    const mime = String(type || "").split(";", 1)[0].trim().toLowerCase();
+    if (!mime || mime.length > 127 || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mime)) {
+      return "application/octet-stream";
+    }
+    return mime;
+  }
+
+  function guessMediaMimeFromName(name) {
+    const match = /\.([a-z0-9]{1,8})$/i.exec(String(name || ""));
+    const extension = match ? match[1].toLowerCase() : "";
+    const types = {
+      mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", qt: "video/quicktime",
+      webm: "video/webm", mkv: "video/x-matroska", avi: "video/x-msvideo", flv: "video/x-flv",
+      ts: "video/mp2t", mts: "video/mp2t", m2ts: "video/mp2t", mpg: "video/mpeg", mpeg: "video/mpeg",
+      "3gp": "video/3gpp", "3g2": "video/3gpp2", m4a: "audio/mp4", mp3: "audio/mpeg",
+      wav: "audio/wav", ogg: "audio/ogg", heic: "image/heic", heif: "image/heif", avif: "image/avif",
+    };
+    return types[extension] || "";
+  }
+
+  function normalizeTransferredFileName(name, mimeType) {
+    const safeName = sanitizeFileName(name || "download.bin");
+    const normalizedMime = normalizeTransferMimeType(mimeType);
+    if (!/^(?:video|audio|image)\//.test(normalizedMime)) return safeName;
+    if (guessMediaMimeFromName(safeName)) return safeName;
+
+    const extension = guessExtensionFromMime(normalizedMime);
+    if (!extension || extension === ".bin") return safeName;
+    const genericSuffix = /\.(?:txt|bin|dat|part)$/i.exec(safeName);
+    if (genericSuffix) {
+      const baseName = safeName.slice(0, -genericSuffix[0].length) || "download";
+      return guessMediaMimeFromName(baseName) ? baseName : baseName + extension;
+    }
+    return /\.[a-z0-9]{1,12}$/i.test(safeName) ? safeName : safeName + extension;
+  }
+
+  async function resolveTransferFileMetadata(file, suggestedName, suggestedMimeType) {
+    const declaredMime = normalizeTransferMimeType(suggestedMimeType || (file && file.type));
+    const nameMime = guessMediaMimeFromName(suggestedName || (file && file.name));
+    let mimeType = /^(?:video|audio|image)\//.test(declaredMime) ? declaredMime : (nameMime || declaredMime);
+    if (!/^(?:video|audio|image)\//.test(mimeType)) {
+      const detectedMime = await sniffMediaMimeType(file);
+      if (detectedMime) mimeType = detectedMime;
+    }
+    return {
+      name: normalizeTransferredFileName(suggestedName || (file && file.name), mimeType),
+      mimeType,
+    };
+  }
+
+  async function sniffMediaMimeType(file) {
+    if (!file || typeof file.slice !== "function" || !Number.isFinite(file.size) || file.size <= 0) return "";
+    let bytes;
+    try {
+      bytes = new Uint8Array(await file.slice(0, Math.min(file.size, 4096)).arrayBuffer());
+    } catch (_) {
+      return "";
+    }
+    if (bytes.length >= 12 && readAscii(bytes, 4, 4) === "ftyp") {
+      const brand = readAscii(bytes, 8, 4).toLowerCase();
+      if (brand.startsWith("qt")) return "video/quicktime";
+      if (brand.startsWith("3g2")) return "video/3gpp2";
+      if (brand.startsWith("3gp")) return "video/3gpp";
+      if (["m4a ", "m4b ", "m4p "].includes(brand)) return "audio/mp4";
+      if (["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(brand)) return "image/heic";
+      if (["avif", "avis"].includes(brand)) return "image/avif";
+      return "video/mp4";
+    }
+    if (bytes.length >= 12 && readAscii(bytes, 0, 4) === "RIFF") {
+      const format = readAscii(bytes, 8, 4);
+      if (format === "AVI ") return "video/x-msvideo";
+      if (format === "WAVE") return "audio/wav";
+      if (format === "WEBP") return "image/webp";
+    }
+    if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
+      return readAscii(bytes, 0, bytes.length).toLowerCase().includes("webm") ? "video/webm" : "video/x-matroska";
+    }
+    if (bytes.length >= 3 && readAscii(bytes, 0, 3) === "FLV") return "video/x-flv";
+    if (bytes.length >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1 && (bytes[3] === 0xba || bytes[3] === 0xb3)) {
+      return "video/mpeg";
+    }
+    if (bytes.length > 376 && bytes[0] === 0x47 && bytes[188] === 0x47 && bytes[376] === 0x47) return "video/mp2t";
+    if (bytes.length >= 8 && bytes[0] === 0x89 && readAscii(bytes, 1, 3) === "PNG") return "image/png";
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+    return "";
+  }
+
+  function readAscii(bytes, offset, length) {
+    let result = "";
+    const end = Math.min(bytes.length, offset + length);
+    for (let index = offset; index < end; index++) result += String.fromCharCode(bytes[index]);
+    return result;
   }
 
   function buildTimestampToken() {
@@ -1515,6 +1626,9 @@
     const chunkSize = Number(meta.chunkSize || activeChunkSize);
     const expectedChunks = Math.ceil(size / chunkSize) || 1;
     const legacy = Boolean(activeSecureTransport && activeSecureTransport.legacy);
+    const mimeType = normalizeTransferMimeType(meta.mimeType || guessMediaMimeFromName(meta.name));
+    const incomingName = normalizeTransferredFileName(meta.name || "download.bin", mimeType);
+    const lastModified = Number.isFinite(Number(meta.lastModified)) ? Number(meta.lastModified) : Date.now();
     let hashAlgorithm;
     try {
       hashAlgorithm = pickHashAlgorithm(meta.hashAlgorithm || (legacy ? "fnv1a32" : DEFAULT_HASH_ALGORITHM), legacy);
@@ -1540,6 +1654,8 @@
         && existing.chunkSize === chunkSize
         && existing.legacy === legacy
         && existing.hashAlgorithm === hashAlgorithm
+        && existing.name === incomingName
+        && existing.mimeType === mimeType
       ) {
         existing.missingRetryAttempts = 0;
         scheduleFileAck(conn, existing, true);
@@ -1570,7 +1686,9 @@
 
     const transfer = {
       id: transferId,
-      name: sanitizeFileName(meta.name || "download.bin"),
+      name: incomingName,
+      mimeType,
+      lastModified,
       size,
       totalChunks,
       chunkSize,
@@ -2002,6 +2120,7 @@
         completionTimer: null,
         cleanupTimer: null,
         fileHash: null,
+        fileMetadata: null,
         maxInFlightBytes: DEFAULT_ACK_WINDOW_BYTES,
         receiverReadyPromise: null,
         receiverReadyTimer: null,
@@ -2068,6 +2187,12 @@
   async function sendTransfer(conn, transfer) {
     if (!isUsableConnection(conn)) throw new Error("connection unavailable");
 
+    transfer.fileMetadata = transfer.fileMetadata || await resolveTransferFileMetadata(
+      transfer.file,
+      transfer.file.name,
+      transfer.file.type
+    );
+
     updateFileStatus(transfer.id, "发送中...", "");
     transfer.startTime = Date.now();
     transfer.sentBytes = 0;
@@ -2092,7 +2217,8 @@
     await sendSecure(conn, {
       type: "file-meta",
       id: transfer.id,
-      name: transfer.file.name,
+      name: transfer.fileMetadata.name,
+      mimeType: transfer.fileMetadata.mimeType,
       size: transfer.file.size,
       totalChunks: transfer.totalChunks,
       chunkSize: transfer.chunkSize,
@@ -2181,10 +2307,15 @@
         updateFileStatus(transfer.id, "连接能力已变化，正在重新发送...", "");
         return;
       }
+      const fileMetadata = transfer.fileMetadata || {
+        name: normalizeTransferredFileName(transfer.file.name, transfer.file.type),
+        mimeType: normalizeTransferMimeType(transfer.file.type || guessMediaMimeFromName(transfer.file.name)),
+      };
       safeSend(conn, {
         type: "file-meta",
         id: transfer.id,
-        name: transfer.file.name,
+        name: fileMetadata.name,
+        mimeType: fileMetadata.mimeType,
         size: transfer.file.size,
         totalChunks: transfer.totalChunks,
         chunkSize: transfer.chunkSize,
@@ -2393,6 +2524,12 @@
 
     item.querySelector(".file-progress-bar").style.width = pct + "%";
     item.querySelector(".file-speed").textContent = speedText ? " · " + speedText : "";
+  }
+
+  function updateFileName(id, name) {
+    const item = document.querySelector('.file-message[data-id="' + cssEscape(id) + '"]');
+    const nameElement = item && item.querySelector(".file-name");
+    if (nameElement) nameElement.textContent = name;
   }
 
   function updateFileStatus(id, text, cls) {
@@ -3336,7 +3473,7 @@
         return new File(
           Array.from({ length: transfer.totalChunks }, (_, seq) => parts.get(seq)),
           transfer.name,
-          { type: "application/octet-stream", lastModified: Date.now() }
+          { type: transfer.mimeType, lastModified: transfer.lastModified }
         );
       },
       async commit(file) {
@@ -3365,7 +3502,7 @@
       async getFile() {
         const parts = await loadStoredChunks(dbPromise, transfer.id);
         if (parts.length !== transfer.totalChunks) throw new Error("Stored chunk count does not match file metadata");
-        return new File(parts, transfer.name, { type: "application/octet-stream", lastModified: Date.now() });
+        return new File(parts, transfer.name, { type: transfer.mimeType, lastModified: transfer.lastModified });
       },
       async commit(file) {
         await downloadReceivedFile(file, transfer.name);
@@ -3446,7 +3583,11 @@
       },
       async getFile() {
         await finishWrites();
-        return options.fileHandle.getFile();
+        const storedFile = await options.fileHandle.getFile();
+        return new File([storedFile], options.transfer.name, {
+          type: options.transfer.mimeType,
+          lastModified: options.transfer.lastModified,
+        });
       },
       async commit(file) {
         await finishWrites();
@@ -3741,7 +3882,7 @@
         if (!transfer.sink) throw createStorageError(new Error("receive sink is unavailable"));
         updateStatus(transfer.id, "正在写入并校验完整文件...", "");
         updateFileProgress(transfer.id, 100, "校验中");
-        const file = await transfer.sink.getFile();
+        let file = await transfer.sink.getFile();
         if (file.size !== transfer.size) throw new Error("Stored file size does not match metadata");
         if (transfer.expectedFileHash) {
           const actualFileHash = await hashReceivedFile(file, transfer);
@@ -3755,6 +3896,16 @@
           }
         } else if (!transfer.legacy) {
           throw new Error("The complete SHA-256 digest is missing");
+        }
+        const resolvedMetadata = await resolveTransferFileMetadata(file, transfer.name, transfer.mimeType);
+        transfer.name = resolvedMetadata.name;
+        transfer.mimeType = resolvedMetadata.mimeType;
+        updateFileName(transfer.id, transfer.name);
+        if (file.name !== transfer.name || file.type !== transfer.mimeType) {
+          file = new File([file], transfer.name, {
+            type: transfer.mimeType,
+            lastModified: transfer.lastModified,
+          });
         }
         updateStatus(transfer.id, "校验通过，正在保存文件...", "");
         updateFileProgress(transfer.id, 100, "保存中");
