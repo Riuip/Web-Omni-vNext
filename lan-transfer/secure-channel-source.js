@@ -454,10 +454,10 @@ function createSecureTransport(connection, config) {
       const transferId = checkedEnvelopeTransferId(message.transferId);
       let ciphertext;
       if (isBinaryEnvelope) {
-        if (!(message.ciphertext instanceof ArrayBuffer)) {
+        if (!(message.ciphertext instanceof ArrayBuffer) && !ArrayBuffer.isView(message.ciphertext)) {
           throw new Error("binary secure ciphertext is invalid");
         }
-        ciphertext = new Uint8Array(message.ciphertext);
+        ciphertext = bytes(message.ciphertext);
       } else {
         const encodedCiphertext = String(message.ciphertext || "");
         if (encodedCiphertext.length > Math.ceil((negotiatedCapabilities.maxMessageBytes + 16) * 4 / 3) + 4) {

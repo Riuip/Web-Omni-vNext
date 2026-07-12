@@ -119,6 +119,8 @@ function assertFastTransferRuntime(source, label) {
     "expectedFileHash",
     "bufferedamountlow",
     "bufferedAmountLowThreshold",
+    "connection.bufferSize",
+    "waitForFinalAcknowledgement",
   ], label);
 
   assertAdaptiveProfile(source, 512, 8, 32, label);
@@ -127,6 +129,9 @@ function assertFastTransferRuntime(source, label) {
   assert.equal(numericConstant(source, "MEMORY_RECEIVE_LIMIT_BYTES"), 32 * 1024 * 1024, `${label} memory threshold changed`);
   assert.equal(numericConstant(source, "SPEED_SAMPLE_WINDOW_MS"), 1500, `${label} speed window must be 1.5 seconds`);
   assert.equal(numericConstant(source, "DATA_CHANNEL_STALL_TIMEOUT_MS"), 15000, `${label} stall timeout must be 15 seconds`);
+  assert.equal(numericConstant(source, "DIRECT_CHUNK_LIMIT_BYTES"), 256 * 1024, `${label} direct chunks must be capped at 256 KiB`);
+  assert.equal(numericConstant(source, "RELAY_CHUNK_LIMIT_BYTES"), 128 * 1024, `${label} relay chunks must be capped at 128 KiB`);
+  assert.ok(numericConstant(source, "FILE_COMPLETE_MAX_ATTEMPTS") >= 30, `${label} completion probes end too early`);
 
   const sendTransfer = functionSource(source, "sendTransfer");
   assertOrdered(sendTransfer, [
@@ -138,6 +143,7 @@ function assertFastTransferRuntime(source, label) {
     /waitForDataChannel/,
     /type\s*:\s*["']file-chunk["']/,
     /fileHasher\.digest\s*\(/,
+    /waitForFinalAcknowledgement/,
     /type\s*:\s*["']file-done["']/,
   ], `${label} send pipeline`);
   assert.match(
@@ -168,7 +174,13 @@ function assertFastTransferRuntime(source, label) {
 
   assert.match(source, /type\s*:\s*["']file-ready["'][\s\S]{0,220}accepted\s*:\s*true[\s\S]{0,220}maxInFlightBytes/, `${label} must acknowledge receiver readiness with a byte window`);
   assert.match(source, /type\s*:\s*["']file-ready["'][\s\S]{0,220}accepted\s*:\s*false[\s\S]{0,220}error/, `${label} must reject files when storage preparation fails`);
-  assert.match(source, /setInterval\s*\(|sleep\s*\(\s*(?:30|50|100)\s*\)/, `${label} backpressure needs a polling fallback`);
+  assert.match(source, /waitForBufferedQueueChange/, `${label} backpressure needs an event and polling fallback`);
+  assert.match(functionSource(source, "getConnectionBufferedBytes"), /connection\s*&&\s*connection\.bufferSize/, `${label} must observe the PeerJS internal queue`);
+  assertTokens(functionSource(source, "getConnectionChunkSize"), [
+    "DIRECT_CHUNK_LIMIT_BYTES",
+    "RELAY_CHUNK_LIMIT_BYTES",
+  ], `${label} conservative chunk negotiation`);
+  assert.match(functionSource(source, "markOutgoingAcknowledged"), /maybeUpdateTransferProgress[\s\S]+lastAckBytes/, `${label} progress must follow receiver acknowledgements`);
   assert.match(source, /actualFileHash[\s\S]{0,160}expectedFileHash/, `${label} must compare the complete file digest before completion`);
   assert.match(source, /完整文件|SHA-256/, `${label} must expose full-file verification failures`);
 }
@@ -212,7 +224,7 @@ assertTokens(secureSource, [
   "featuresReady",
   "negotiatedFeatures",
   "supportsBinaryEnvelope",
-  "ciphertext instanceof ArrayBuffer",
+  "ArrayBuffer.isView(message.ciphertext)",
 ], "secure channel source");
 assert.equal(numericConstant(secureSource, "FEATURES_TIMEOUT_MS"), 300, "feature negotiation timeout must remain 300 ms");
 assert.match(
@@ -272,7 +284,8 @@ assert.match(transferHtml, /id=["']receiveFolderStatus["']/, "desktop toolbar ne
 
 assert.match(mobile, /SIGNAL_SERVERS\[normalizedAttempt\s*%\s*SIGNAL_SERVERS\.length\]/, "mobile signaling must rotate configured servers");
 assert.match(mobile, /params\.get\(["']s["']\)\s*\|\|\s*params\.get\(["']session["']\)/, "mobile launch parser must support v2 and compatibility session keys");
-assert.match(mobile, /supportsBinaryEnvelope\s*:\s*!LOCAL_RELAY_URL/, "mobile must disable binary envelopes for the JSON relay");
+assert.match(mobile, /supportsBinaryEnvelope\s*:\s*false/, "mobile JSON relay must identify itself as text-only");
+assert.match(mobile, /supportsBinaryEnvelope\s*:\s*connection\.supportsBinaryEnvelope\s*!==\s*false\s*&&\s*!LOCAL_RELAY_URL/, "mobile must disable binary envelopes for the JSON relay");
 assertFastTransferRuntime(mobile, "mobile runtime");
 assertTokens(mobile, [
   "createReceiveStore",

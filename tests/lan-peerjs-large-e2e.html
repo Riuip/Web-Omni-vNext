@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Web-Omni LAN 12 MiB E2E</title>
+<pre id="status">starting</pre>
+<script src="../lan-transfer/peerjs.min.js"></script>
+<script src="../lan-transfer/secure-channel.js"></script>
+<script>
+(async function() {
+  "use strict";
+  const requestedMiB = Math.max(1, Math.min(256, Number(new URLSearchParams(location.search).get("mib")) || 12));
+  const TOTAL_BYTES = Math.floor(requestedMiB * 1024 * 1024);
+  const CHUNK_BYTES = 256 * 1024;
+  const ACK_WINDOW_BYTES = 8 * 1024 * 1024;
+  const HIGH_WATER_BYTES = 8 * 1024 * 1024;
+  const LOW_WATER_BYTES = 4 * 1024 * 1024;
+  const PEER_BUFFER_ITEM_BYTES = 17 * 1024;
+  const status = document.getElementById("status");
+  const session = WebOmniLanSecure.createSession();
+  const peerId = "wo-e2e-" + Array.from(crypto.getRandomValues(new Uint8Array(8)), function(value) {
+    return value.toString(16).padStart(2, "0");
+  }).join("");
+  const peerOptions = {
+    host: "0.peerjs.com",
+    port: 443,
+    secure: true,
+    path: "/",
+    config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] },
+    debug: 0
+  };
+  let desktopConnection;
+  let mobileConnection;
+  let desktopTransport;
+  let mobileTransport;
+  let desktopChain = Promise.resolve();
+  let mobileChain = Promise.resolve();
+  let acknowledgedBytes = 0;
+  let acknowledgedChunks = 0;
+  let receivedBytes = 0;
+  let receivedChunks = 0;
+  let maxQueuedBytes = 0;
+  let completeResolve;
+  const completePromise = new Promise(function(resolve) { completeResolve = resolve; });
+  const receiverHasher = WebOmniLanSecure.createSha256();
+  const senderHasher = WebOmniLanSecure.createSha256();
+  const ackWaiters = new Set();
+
+  function failFromChain(error) {
+    if (!window.__woLanE2eResult) {
+      window.__woLanE2eResult = { ok: false, error: error && error.stack || String(error) };
+      status.textContent = JSON.stringify(window.__woLanE2eResult);
+    }
+    throw error;
+  }
+
+  function queuedBytes(connection) {
+    const channel = connection.dataChannel || connection._dc;
+    return Math.max(0, Number(channel && channel.bufferedAmount) || 0)
+      + Math.max(0, Number(connection.bufferSize) || 0) * PEER_BUFFER_ITEM_BYTES;
+  }
+
+  function waitTick(connection) {
+    const channel = connection.dataChannel || connection._dc;
+    if (!channel || typeof channel.addEventListener !== "function") {
+      return new Promise(function(resolve) { setTimeout(resolve, 50); });
+    }
+    return new Promise(function(resolve) {
+      let settled = false;
+      const finish = function() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        channel.removeEventListener("bufferedamountlow", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 50);
+      channel.addEventListener("bufferedamountlow", finish, { once: true });
+    });
+  }
+
+  async function waitForQueue(connection) {
+    const channel = connection.dataChannel || connection._dc;
+    if (!channel || queuedBytes(connection) <= HIGH_WATER_BYTES) return;
+    const previousThreshold = channel.bufferedAmountLowThreshold;
+    let lowest = queuedBytes(connection);
+    let lastProgressAt = Date.now();
+    channel.bufferedAmountLowThreshold = LOW_WATER_BYTES;
+    try {
+      while (queuedBytes(connection) > LOW_WATER_BYTES) {
+        if (Date.now() - lastProgressAt > 15000) throw new Error("PeerJS queue stalled");
+        await waitTick(connection);
+        const current = queuedBytes(connection);
+        if (current < lowest) {
+          lowest = current;
+          lastProgressAt = Date.now();
+        }
+      }
+    } finally {
+      channel.bufferedAmountLowThreshold = previousThreshold;
+    }
+  }
+
+  function wakeAckWaiters() {
+    Array.from(ackWaiters).forEach(function(resolve) { resolve(); });
+    ackWaiters.clear();
+  }
+
+  function waitForAck() {
+    return new Promise(function(resolve, reject) {
+      const timer = setTimeout(function() {
+        ackWaiters.delete(finish);
+        reject(new Error("ACK timeout"));
+      }, 15000);
+      const finish = function() {
+        clearTimeout(timer);
+        ackWaiters.delete(finish);
+        resolve();
+      };
+      ackWaiters.add(finish);
+    });
+  }
+
+  function attachDesktop(connection) {
+    desktopConnection = connection;
+    connection.on("data", function(envelope) {
+      desktopChain = desktopChain.then(async function() {
+        const result = await desktopTransport.handle(envelope);
+        const message = result && result.message;
+        if (!message) return;
+        if (message.type === "file-ack") {
+          acknowledgedBytes = Math.max(acknowledgedBytes, Number(message.receivedBytes) || 0);
+          acknowledgedChunks = Math.max(acknowledgedChunks, Number(message.receivedCount) || 0);
+          wakeAckWaiters();
+        } else if (message.type === "file-complete") {
+          completeResolve(message);
+        }
+      }).catch(failFromChain);
+    });
+    connection.on("open", function() {
+      desktopTransport = WebOmniLanSecure.createSecureTransport(connection, {
+        role: "desktop",
+        sessionId: session.sessionId,
+        pairingSecret: session.pairingSecret,
+        capabilities: { maxMessageBytes: 2 * 1024 * 1024, chunkSize: CHUNK_BYTES, hash: ["sha256"], resume: true },
+        supportsBinaryEnvelope: true
+      });
+    });
+  }
+
+  function attachMobile(connection) {
+    mobileConnection = connection;
+    connection.on("data", function(envelope) {
+      mobileChain = mobileChain.then(async function() {
+        const result = await mobileTransport.handle(envelope);
+        const message = result && result.message;
+        if (!message) return;
+        if (message.type === "file-chunk") {
+          const chunk = new Uint8Array(message.chunk);
+          receiverHasher.update(chunk);
+          receivedBytes += chunk.byteLength;
+          receivedChunks += 1;
+          if (receivedChunks % 4 === 0 || receivedBytes === TOTAL_BYTES) {
+            await mobileTransport.send({
+              type: "file-ack",
+              id: "large-e2e",
+              receivedCount: receivedChunks,
+              receivedBytes: receivedBytes
+            });
+          }
+        } else if (message.type === "file-done") {
+          const receivedHash = "sha256:" + receiverHasher.digestHex();
+          if (receivedHash !== message.fileHash) throw new Error("full-file SHA-256 mismatch");
+          await mobileTransport.send({
+            type: "file-complete",
+            id: "large-e2e",
+            receivedBytes: receivedBytes,
+            fileHash: receivedHash
+          });
+        }
+      }).catch(failFromChain);
+    });
+    connection.on("open", function() {
+      mobileTransport = WebOmniLanSecure.createSecureTransport(connection, {
+        role: "mobile",
+        sessionId: session.sessionId,
+        pairingSecret: session.pairingSecret,
+        capabilities: { maxMessageBytes: 2 * 1024 * 1024, chunkSize: CHUNK_BYTES, hash: ["sha256"], resume: true },
+        supportsBinaryEnvelope: true
+      });
+    });
+  }
+
+  try {
+    const desktopPeer = new Peer(peerId, peerOptions);
+    const mobilePeer = new Peer(undefined, peerOptions);
+    desktopPeer.on("connection", attachDesktop);
+    await new Promise(function(resolve, reject) {
+      desktopPeer.on("open", resolve);
+      desktopPeer.on("error", reject);
+    });
+    await new Promise(function(resolve, reject) {
+      mobilePeer.on("open", resolve);
+      mobilePeer.on("error", reject);
+    });
+    const outgoing = mobilePeer.connect(peerId, { reliable: true, serialization: "binary" });
+    attachMobile(outgoing);
+
+    const connectStartedAt = Date.now();
+    while (!desktopTransport || !mobileTransport || !desktopTransport.authenticated || !mobileTransport.authenticated) {
+      if (Date.now() - connectStartedAt > 20000) throw new Error("secure connection timeout");
+      await new Promise(function(resolve) { setTimeout(resolve, 20); });
+    }
+    await Promise.all([desktopTransport.featuresReady, mobileTransport.featuresReady]);
+    if (!desktopTransport.negotiatedFeatures.binaryEnvelope) throw new Error("binary envelope was not negotiated");
+
+    const startedAt = performance.now();
+    for (let offset = 0, sequence = 0; offset < TOTAL_BYTES; offset += CHUNK_BYTES, sequence += 1) {
+      while (offset - acknowledgedBytes + CHUNK_BYTES > ACK_WINDOW_BYTES) await waitForAck();
+      await waitForQueue(desktopConnection);
+      const chunk = new Uint8Array(Math.min(CHUNK_BYTES, TOTAL_BYTES - offset));
+      chunk.fill(sequence & 255);
+      senderHasher.update(chunk);
+      await desktopTransport.send({ type: "file-chunk", id: "large-e2e", seq: sequence, chunk: chunk.buffer });
+      maxQueuedBytes = Math.max(maxQueuedBytes, queuedBytes(desktopConnection));
+      status.textContent = "sent " + (offset + chunk.byteLength) + " / " + TOTAL_BYTES;
+    }
+    while (acknowledgedBytes < TOTAL_BYTES || acknowledgedChunks < TOTAL_BYTES / CHUNK_BYTES) await waitForAck();
+    const fileHash = "sha256:" + senderHasher.digestHex();
+    await desktopTransport.send({ type: "file-done", id: "large-e2e", fileHash: fileHash });
+    const completed = await Promise.race([
+      completePromise,
+      new Promise(function(_, reject) { setTimeout(function() { reject(new Error("completion timeout")); }, 30000); })
+    ]);
+    if (completed.receivedBytes !== TOTAL_BYTES || completed.fileHash !== fileHash) throw new Error("completion mismatch");
+    window.__woLanE2eResult = {
+      ok: true,
+      totalBytes: TOTAL_BYTES,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      maxQueuedBytes: maxQueuedBytes,
+      binaryEnvelope: true
+    };
+    status.textContent = JSON.stringify(window.__woLanE2eResult);
+    desktopPeer.destroy();
+    mobilePeer.destroy();
+  } catch (error) {
+    window.__woLanE2eResult = { ok: false, error: error && error.stack || String(error) };
+    status.textContent = JSON.stringify(window.__woLanE2eResult);
+  }
+})();
+</script>
+</html>

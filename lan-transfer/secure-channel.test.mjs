@@ -150,7 +150,10 @@ async function connectedPair(desktopCapabilities, mobileCapabilities, options = 
   const envelope = pair.getDesktopEnvelope();
   assert.equal(envelope.type, "wo-v2-secure-bin");
   assert.ok(envelope.ciphertext instanceof ArrayBuffer);
-  const result = await pair.mobile.handle(envelope);
+  const result = await pair.mobile.handle({
+    ...envelope,
+    ciphertext: new Uint8Array(envelope.ciphertext),
+  });
   assert.deepEqual(Array.from(new Uint8Array(result.message.chunk)), [9, 8, 7]);
 }
 
@@ -183,7 +186,10 @@ async function connectedPair(desktopCapabilities, mobileCapabilities, options = 
     });
     const envelope = pair.getDesktopEnvelope();
     assert.equal(envelope.type, "wo-v2-secure-bin");
-    const result = await pair.mobile.handle(envelope);
+    const result = await pair.mobile.handle({
+      ...envelope,
+      ciphertext: new Uint8Array(envelope.ciphertext),
+    });
     const receivedChunk = new Uint8Array(result.message.chunk);
     receivedDigest.update(receivedChunk);
     receivedBytes += receivedChunk.byteLength;

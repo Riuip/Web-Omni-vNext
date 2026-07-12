@@ -11,6 +11,10 @@
       : Object.freeze({ chunkSize: 128 * 1024, bufferHighWaterMark: 2 * 1024 * 1024, ackWindowBytes: 8 * 1024 * 1024 });
   const CHUNK_SIZE = DEVICE_TRANSFER_PROFILE.chunkSize;
   const LEGACY_CHUNK_SIZE = 64 * 1024;
+  const DIRECT_CHUNK_LIMIT_BYTES = 256 * 1024;
+  const RELAY_CHUNK_LIMIT_BYTES = 128 * 1024;
+  const PEERJS_BUFFERED_CHUNK_BYTES = 17 * 1024;
+  const BUFFER_POLL_INTERVAL_MS = 50;
   const RESEND_BATCH_SIZE = DEVICE_MEMORY_GB > 2 ? 64 : 32;
   const BUFFER_HIGH_WATER_MARK = DEVICE_TRANSFER_PROFILE.bufferHighWaterMark;
   const DEFAULT_ACK_WINDOW_BYTES = DEVICE_TRANSFER_PROFILE.ackWindowBytes;
@@ -27,7 +31,7 @@
   const DATA_CHANNEL_STALL_TIMEOUT_MS = 15000;
   const MAX_SEND_ATTEMPTS = 3;
   const FILE_COMPLETE_RETRY_MS = 2000;
-  const FILE_COMPLETE_MAX_ATTEMPTS = 5;
+  const FILE_COMPLETE_MAX_ATTEMPTS = 30;
   const MISSING_CHUNK_RETRY_MS = 1200;
   const MISSING_CHUNK_MAX_ATTEMPTS = 10;
   const COMPLETED_TRANSFER_CACHE_MS = 60000;
@@ -423,6 +427,7 @@
     }
     const connection = {
       open: false,
+      supportsBinaryEnvelope: false,
       dataChannel: {
         get bufferedAmount() { return socket.bufferedAmount; }
       },
@@ -465,6 +470,19 @@
     }, getReconnectDelay(nextAttempt));
   }
 
+  function getConnectionChunkSize(connection) {
+    const relayLimit = connection && connection.supportsBinaryEnvelope === false
+      ? RELAY_CHUNK_LIMIT_BYTES
+      : DIRECT_CHUNK_LIMIT_BYTES;
+    const peerConnection = connection && connection.peerConnection;
+    const reportedMax = Number(peerConnection && peerConnection.sctp && peerConnection.sctp.maxMessageSize);
+    const sctpLimit = Number.isFinite(reportedMax) && reportedMax > 0
+      ? Math.max(64 * 1024, reportedMax - 32 * 1024)
+      : relayLimit;
+    const limited = Math.min(CHUNK_SIZE, relayLimit, sctpLimit);
+    return Math.max(64 * 1024, Math.floor(limited / (16 * 1024)) * 16 * 1024);
+  }
+
   function attachConnection(connection, peerTargetId) {
     if (conn && conn !== connection) {
       markPendingTextMessagesFailed("发送中断");
@@ -502,17 +520,18 @@
         }
         return;
       }
+      const connectionChunkSize = getConnectionChunkSize(connection);
       secureTransport = globalThis.WebOmniLanSecure.createSecureTransport(connection, {
         role: "mobile",
         sessionId: SECURE_SESSION.sessionId,
         pairingSecret: SECURE_SESSION.pairingSecret,
         capabilities: {
-          maxMessageBytes: Math.max(2 * 1024 * 1024, CHUNK_SIZE + 64 * 1024),
-          chunkSize: CHUNK_SIZE,
+          maxMessageBytes: Math.max(2 * 1024 * 1024, connectionChunkSize + 64 * 1024),
+          chunkSize: connectionChunkSize,
           hash: [DEFAULT_HASH_ALGORITHM],
           resume: true
         },
-        supportsBinaryEnvelope: !LOCAL_RELAY_URL,
+        supportsBinaryEnvelope: connection.supportsBinaryEnvelope !== false && !LOCAL_RELAY_URL,
       });
       const v2Transport = secureTransport;
       v2Transport.ready.then(function() {
@@ -1237,9 +1256,25 @@
   function markOutgoingAcknowledged(message) {
     const transfer = outgoingTransfers.get(String(message.id || ""));
     if (!transfer) return;
-    transfer.lastAckCount = Math.max(transfer.lastAckCount, Number(message.receivedCount || 0));
-    transfer.lastAckBytes = Math.max(transfer.lastAckBytes, Number(message.receivedBytes || 0));
-    transfer.lastAckAt = Date.now();
+    const receivedCount = Math.max(0, Math.min(transfer.totalChunks, Number(message.receivedCount) || 0));
+    const receivedBytes = Math.max(0, Math.min(transfer.file.size, Number(message.receivedBytes) || 0));
+    const nextCount = Math.max(transfer.lastAckCount, receivedCount);
+    const nextBytes = Math.max(transfer.lastAckBytes, receivedBytes);
+    const progressed = nextCount > transfer.lastAckCount || nextBytes > transfer.lastAckBytes;
+    transfer.lastAckCount = nextCount;
+    transfer.lastAckBytes = nextBytes;
+    if (progressed) {
+      transfer.lastAckAt = Date.now();
+      const pct = transfer.file.size > 0
+        ? Math.min(100, Math.round((transfer.lastAckBytes / transfer.file.size) * 100))
+        : (transfer.lastAckCount >= transfer.totalChunks ? 100 : 0);
+      maybeUpdateTransferProgress(
+        transfer,
+        pct,
+        "传输 · " + formatTransferSpeed(transfer, transfer.lastAckBytes),
+        pct === 100
+      );
+    }
     if (transfer.ackWaiters) {
       Array.from(transfer.ackWaiters).forEach(function(resolve) { resolve(); });
       transfer.ackWaiters.clear();
@@ -1360,12 +1395,22 @@
         if (!isPageClosing && error.code !== "RECEIVER_REJECTED" && transfer.sendAttempts < MAX_SEND_ATTEMPTS) {
           transfer.state = "queued";
           sendQueue.unshift(transfer);
-          updateFileStatus(transfer.id, conn && conn.open ? "发送受阻，正在重试..." : "连接中断，等待恢复...", "");
+          const retryText = error.code === "DATA_CHANNEL_STALLED"
+            ? "网络发送队列停滞，正在重新建立传输..."
+            : error.code === "ACK_STALLED"
+              ? "接收确认停滞，正在恢复传输..."
+              : (conn && conn.open ? "发送受阻，正在重试..." : "连接中断，等待恢复...");
+          updateFileStatus(transfer.id, retryText, "");
           if (conn && conn.open) await sleep(getReconnectDelay(transfer.sendAttempts));
           else break;
         } else {
           transfer.state = "failed";
-          updateFileStatus(transfer.id, error.code === "RECEIVER_REJECTED" ? error.message : "发送失败", "error");
+          const failureText = error.code === "RECEIVER_REJECTED"
+            ? error.message
+            : error.code === "DATA_CHANNEL_STALLED" || error.code === "ACK_STALLED"
+              ? "网络通道持续无进展，传输已停止，请重新连接后再试。"
+              : "发送失败";
+          updateFileStatus(transfer.id, failureText, "error");
           scheduleOutgoingCleanup(transfer);
         }
       }
@@ -1386,7 +1431,7 @@
     transfer.lastAckBytes = 0;
     transfer.lastAckCount = 0;
     transfer.lastAckAt = Date.now();
-    transfer.speedSamples = [];
+    transfer.speedSamples = [{ at: performance.now(), bytes: 0 }];
     transfer.abortError = null;
     transfer.chunkSize = activeChunkSize;
     transfer.totalChunks = Math.ceil(transfer.file.size / transfer.chunkSize) || 1;
@@ -1441,20 +1486,13 @@
       await sendSecure(connection, chunkMessage);
 
       transfer.sentBytes += arrayBuffer.byteLength;
-      const pct = transfer.file.size > 0
-        ? Math.min(100, Math.round((transfer.sentBytes / transfer.file.size) * 100))
-        : 100;
-      maybeUpdateTransferProgress(
-        transfer,
-        pct,
-        formatTransferSpeed(transfer, transfer.sentBytes),
-        seq === transfer.totalChunks - 1
-      );
     }
 
     transfer.fileHash = fileHasher.digest();
+    updateFileStatus(transfer.id, "等待接收端写入剩余数据...", "");
+    await waitForFinalAcknowledgement(connection, transfer);
     await sendSecure(connection, { type: "file-done", id: transfer.id, totalChunks: transfer.totalChunks, fileHash: transfer.fileHash });
-    updateFileStatus(transfer.id, "等待接收端校验...", "");
+    updateFileStatus(transfer.id, "传输完成，正在进行完整文件校验...", "");
   }
 
   function readFileChunk(transfer, seq) {
@@ -1485,24 +1523,46 @@
   }
 
   async function waitForAckWindow(connection, transfer, nextBytes) {
-    const deadline = Date.now() + DATA_CHANNEL_STALL_TIMEOUT_MS;
     while (transfer.sentBytes - transfer.lastAckBytes + nextBytes > transfer.maxInFlightBytes) {
       if (transfer.abortError) throw transfer.abortError;
       if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
-      if (Date.now() >= deadline) throw new Error("receiver acknowledgement timeout");
-      await new Promise(function(resolve) {
-        let settled = false;
-        const finish = function() {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          transfer.ackWaiters.delete(finish);
-          resolve();
-        };
-        const timer = setTimeout(finish, Math.min(250, Math.max(1, deadline - Date.now())));
-        transfer.ackWaiters.add(finish);
-      });
+      if (Date.now() - transfer.lastAckAt >= DATA_CHANNEL_STALL_TIMEOUT_MS) {
+        const error = new Error("receiver acknowledgement made no progress for 15 seconds");
+        error.code = "ACK_STALLED";
+        throw error;
+      }
+      await waitForAckSignal(transfer);
     }
+  }
+
+  async function waitForFinalAcknowledgement(connection, transfer) {
+    while (transfer.lastAckCount < transfer.totalChunks
+      || (transfer.file.size > 0 && transfer.lastAckBytes < transfer.file.size)) {
+      if (transfer.abortError) throw transfer.abortError;
+      if (!isUsableConnection(connection)) throw new Error("connection closed before final acknowledgement");
+      if (Date.now() - transfer.lastAckAt >= DATA_CHANNEL_STALL_TIMEOUT_MS) {
+        const error = new Error("final receiver acknowledgement made no progress for 15 seconds");
+        error.code = "ACK_STALLED";
+        throw error;
+      }
+      await waitForAckSignal(transfer);
+    }
+  }
+
+  function waitForAckSignal(transfer) {
+    return new Promise(function(resolve) {
+      let settled = false;
+      const finish = function() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        transfer.ackWaiters.delete(finish);
+        resolve();
+      };
+      const remaining = Math.max(1, DATA_CHANNEL_STALL_TIMEOUT_MS - (Date.now() - transfer.lastAckAt));
+      const timer = setTimeout(finish, Math.min(250, remaining));
+      transfer.ackWaiters.add(finish);
+    });
   }
 
   function armCompletionProbe(connection, transfer) {
@@ -1572,48 +1632,59 @@
     const dataChannel = connection.dataChannel || connection._dc;
     if (!dataChannel) return;
 
-    if (dataChannel.bufferedAmount <= BUFFER_HIGH_WATER_MARK) return;
-    const deadline = Date.now() + DATA_CHANNEL_STALL_TIMEOUT_MS;
-    if (typeof dataChannel.addEventListener !== "function") {
-      while (dataChannel.bufferedAmount > BUFFER_HIGH_WATER_MARK) {
-        if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
-        if (Date.now() >= deadline) throw new Error("data channel backpressure timeout");
-        await sleep(50);
-      }
-      return;
-    }
+    const highWaterMark = BUFFER_HIGH_WATER_MARK;
+    const lowWaterMark = Math.max(activeChunkSize * 2, Math.floor(highWaterMark / 2));
+    let queuedBytes = getConnectionBufferedBytes(connection, dataChannel);
+    if (queuedBytes <= highWaterMark) return;
 
-    const previousThreshold = dataChannel.bufferedAmountLowThreshold;
-    dataChannel.bufferedAmountLowThreshold = BUFFER_HIGH_WATER_MARK;
+    const previousThreshold = Number(dataChannel.bufferedAmountLowThreshold || 0);
+    let lowestQueuedBytes = queuedBytes;
+    let lastProgressAt = Date.now();
     try {
-      await new Promise(function(resolve, reject) {
-        let timer = null;
-        let pollTimer = null;
-        const cleanup = function() {
-          clearTimeout(timer);
-          clearInterval(pollTimer);
-          dataChannel.removeEventListener("bufferedamountlow", check);
-        };
-        const check = function() {
-          if (!isUsableConnection(connection)) {
-            cleanup();
-            reject(new Error("connection replaced or closed"));
-          } else if (dataChannel.bufferedAmount <= BUFFER_HIGH_WATER_MARK) {
-            cleanup();
-            resolve();
-          }
-        };
-        dataChannel.addEventListener("bufferedamountlow", check);
-        pollTimer = setInterval(check, 100);
-        timer = setTimeout(function() {
-          cleanup();
-          reject(new Error("data channel backpressure timeout"));
-        }, DATA_CHANNEL_STALL_TIMEOUT_MS);
-        check();
-      });
+      try { dataChannel.bufferedAmountLowThreshold = lowWaterMark; } catch (error) {}
+      while (queuedBytes > lowWaterMark) {
+        if (!isUsableConnection(connection)) throw new Error("connection replaced or closed");
+        if (Date.now() - lastProgressAt >= DATA_CHANNEL_STALL_TIMEOUT_MS) {
+          const error = new Error("data channel queue made no progress for 15 seconds");
+          error.code = "DATA_CHANNEL_STALLED";
+          throw error;
+        }
+        await waitForBufferedQueueChange(dataChannel);
+        queuedBytes = getConnectionBufferedBytes(connection, dataChannel);
+        if (queuedBytes < lowestQueuedBytes) {
+          lowestQueuedBytes = queuedBytes;
+          lastProgressAt = Date.now();
+        }
+      }
     } finally {
-      dataChannel.bufferedAmountLowThreshold = previousThreshold;
+      try { dataChannel.bufferedAmountLowThreshold = previousThreshold; } catch (error) {}
     }
+  }
+
+  function getConnectionBufferedBytes(connection, dataChannel) {
+    const channelBytes = Math.max(0, Number(dataChannel && dataChannel.bufferedAmount) || 0);
+    let peerBufferedItems = 0;
+    try { peerBufferedItems = Math.max(0, Number(connection && connection.bufferSize) || 0); } catch (error) {}
+    return channelBytes + peerBufferedItems * PEERJS_BUFFERED_CHUNK_BYTES;
+  }
+
+  function waitForBufferedQueueChange(dataChannel) {
+    if (typeof dataChannel.addEventListener !== "function"
+      || typeof dataChannel.removeEventListener !== "function") {
+      return sleep(BUFFER_POLL_INTERVAL_MS);
+    }
+    return new Promise(function(resolve) {
+      let settled = false;
+      const finish = function() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        dataChannel.removeEventListener("bufferedamountlow", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, BUFFER_POLL_INTERVAL_MS);
+      dataChannel.addEventListener("bufferedamountlow", finish, { once: true });
+    });
   }
 
   function addFileItem(id, name, size, direction, statusText) {
